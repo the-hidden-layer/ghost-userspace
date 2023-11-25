@@ -51,7 +51,7 @@ struct DynamicTask : public Task<> {
 };
 
 class DynamicRq {
- public:
+public:
   DynamicRq() = default;
   DynamicRq(const DynamicRq&) = delete;
   DynamicRq& operator=(DynamicRq&) = delete;
@@ -72,7 +72,7 @@ class DynamicRq {
 
   bool Empty() const { return Size() == 0; }
 
- private:
+private:
   mutable absl::Mutex mu_;
   std::deque<DynamicTask*> rq_ ABSL_GUARDED_BY(mu_);
 };
@@ -104,7 +104,7 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
   void DumpState(const Cpu& cpu, int flags) final;
   std::atomic<bool> debug_runqueue_ = false;
 
-    int CountAllTasks() const {
+  int CountAllTasks() const {
     int num_tasks = 0;
     allocator()->ForEachTask([&num_tasks](Gtid gtid, const DynamicTask* task) {
       ++num_tasks;
@@ -113,7 +113,7 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
     return num_tasks;
   }
 
-  protected:
+protected:
   void TaskNew(DynamicTask* task, const Message& msg) final;
   void TaskRunnable(DynamicTask* task, const Message& msg) final;
   void TaskDeparted(DynamicTask* task, const Message& msg) final;
@@ -123,7 +123,7 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
   void TaskPreempted(DynamicTask* task, const Message& msg) final;
   void TaskSwitchto(DynamicTask* task, const Message& msg) final;
 
-  private:
+private:
   CpuState cpu_states_[MAX_CPUS];
   Channel* default_channel_ = nullptr;
 };
@@ -133,19 +133,19 @@ std::unique_ptr<DynamicScheduler> MultiThreadedDynamicScheduler(
     absl::Duration rr_min_granularity);
 
 class DynamicAgent : public LocalAgent {
- public:
+public:
   DynamicAgent(Enclave* enclave, Cpu cpu, DynamicScheduler* scheduler)
       : LocalAgent(enclave, cpu), scheduler_(scheduler) {}
 
   void AgentThread() override;
   Scheduler* AgentScheduler() const override { return scheduler_; }
 
- private:
+private:
   DynamicScheduler* scheduler_;
 };
 
 class DynamicConfig : public AgentConfig {
- public:
+public:
   DynamicConfig() {}
   DynamicConfig(Topology* topology, CpuList cpulist)
       : AgentConfig(topology, std::move(cpulist)) {}
@@ -161,7 +161,7 @@ class DynamicConfig : public AgentConfig {
 
 template <class EnclaveType>
 class FullDynamicAgent : public FullAgent<EnclaveType> {
-  public:
+public:
   explicit FullDynamicAgent(DynamicConfig config) : FullAgent<EnclaveType>(config) {
     scheduler_ =
         MultiThreadedDynamicScheduler(&this->enclave_, *this->enclave_.cpus(),
@@ -194,7 +194,7 @@ class FullDynamicAgent : public FullAgent<EnclaveType> {
     }
   }
 
-  private:
+private:
   std::unique_ptr<DynamicScheduler> scheduler_;
 };
 }  // namespace ghost
