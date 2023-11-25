@@ -714,6 +714,35 @@ cc_library(
     ],
 )
 
+# cc_binary(
+#     name = "dynamic_agent",
+#     srcs = [
+#         "schedulers/dynamic/dynamic_agent.cc",
+#     ],
+#     copts = compiler_flags,
+#     deps = [
+#         ":agent",
+#         ":dynamic_scheduler",
+#         "@com_google_absl//absl/debugging:symbolize",
+#         "@com_google_absl//absl/flags:parse",
+#     ],
+# )
+
+# cc_library(
+#     name = "dynamic_scheduler",
+#     srcs = [
+#         "schedulers/dynamic/dynamic_scheduler.cc",
+#         "schedulers/dynamic/dynamic_scheduler.h",
+#     ],
+#     hdrs = [
+#         "schedulers/dynamic/dynamic_scheduler.h",
+#     ],
+#     copts = compiler_flags,
+#     deps = [
+#         ":agent",
+#     ],
+# )
+
 cc_binary(
     name = "fifo_centralized_agent",
     srcs = [
