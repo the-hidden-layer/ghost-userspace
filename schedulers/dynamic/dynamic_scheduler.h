@@ -18,6 +18,7 @@ enum class DynamicTaskState {
   kOnCpu,     // running on cpu.
 };
 
+// For CHECK and friends.
 std::ostream& operator<<(std::ostream& os, const DynamicTaskState& state);
 
 struct DynamicTask : public Task<> {
@@ -77,34 +78,26 @@ class DynamicRq {
   std::deque<DynamicTask*> rq_ ABSL_GUARDED_BY(mu_);
 };
 
-struct CpuState {
-  DynamicTask* current = nullptr;
-  std::unique_ptr<Channel> channel = nullptr;
-  DynamicRq run_queue;
-};
-
 class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
-  public:
+ public:
   explicit DynamicScheduler(Enclave* enclave, CpuList cpulist,
-                         std::shared_ptr<TaskAllocator<DynamicTask>> allocator,
-                         absl::Duration scheduler_swap_granularity, absl::Duration rr_min_granularity);
-  ~DynamicScheduler() final;
+                         std::shared_ptr<TaskAllocator<DynamicTask>> allocator);
+  ~DynamicScheduler() final {}
+
+  void Schedule(const Cpu& cpu, const StatusWord& sw);
+
   void EnclaveReady() final;
   Channel& GetDefaultChannel() final { return *default_channel_; };
 
-  static constexpr int kDebugRunqueue = 1;
-  static constexpr int kCountAllTasks = 2;
-
-
   bool Empty(const Cpu& cpu) {
-    CpuState* cs = &cpu_states_[cpu.id()];
+    CpuState* cs = cpu_state(cpu);
     return cs->run_queue.Empty();
   }
 
   void DumpState(const Cpu& cpu, int flags) final;
   std::atomic<bool> debug_runqueue_ = false;
 
-    int CountAllTasks() const {
+  int CountAllTasks() {
     int num_tasks = 0;
     allocator()->ForEachTask([&num_tasks](Gtid gtid, const DynamicTask* task) {
       ++num_tasks;
@@ -113,7 +106,10 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
     return num_tasks;
   }
 
-  protected:
+  static constexpr int kDebugRunqueue = 1;
+  static constexpr int kCountAllTasks = 2;
+
+ protected:
   void TaskNew(DynamicTask* task, const Message& msg) final;
   void TaskRunnable(DynamicTask* task, const Message& msg) final;
   void TaskDeparted(DynamicTask* task, const Message& msg) final;
@@ -123,15 +119,35 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
   void TaskPreempted(DynamicTask* task, const Message& msg) final;
   void TaskSwitchto(DynamicTask* task, const Message& msg) final;
 
-  private:
+ private:
+  void DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrier,
+                    bool prio_boosted);
+  void TaskOffCpu(DynamicTask* task, bool blocked, bool from_switchto);
+  void TaskOnCpu(DynamicTask* task, Cpu cpu);
+  void Migrate(DynamicTask* task, Cpu cpu, BarrierToken seqnum);
+  Cpu AssignCpu(DynamicTask* task);
+  void DumpAllTasks();
+
+  struct CpuState {
+    DynamicTask* current = nullptr;
+    std::unique_ptr<Channel> channel = nullptr;
+    DynamicRq run_queue;
+  } ABSL_CACHELINE_ALIGNED;
+
+  inline CpuState* cpu_state(const Cpu& cpu) { return &cpu_states_[cpu.id()]; }
+
+  inline CpuState* cpu_state_of(const DynamicTask* task) {
+    CHECK_GE(task->cpu, 0);
+    CHECK_LT(task->cpu, MAX_CPUS);
+    return &cpu_states_[task->cpu];
+  }
+
   CpuState cpu_states_[MAX_CPUS];
   Channel* default_channel_ = nullptr;
 };
 
-std::unique_ptr<DynamicScheduler> MultiThreadedDynamicScheduler(
-    Enclave* enclave, CpuList cpulist, absl::Duration scheduler_swap_granularity,
-    absl::Duration rr_min_granularity);
-
+std::unique_ptr<DynamicScheduler> MultiThreadedDynamicScheduler(Enclave* enclave,
+                                                          CpuList cpulist);
 class DynamicAgent : public LocalAgent {
  public:
   DynamicAgent(Enclave* enclave, Cpu cpu, DynamicScheduler* scheduler)
@@ -144,28 +160,12 @@ class DynamicAgent : public LocalAgent {
   DynamicScheduler* scheduler_;
 };
 
-class DynamicConfig : public AgentConfig {
- public:
-  DynamicConfig() {}
-  DynamicConfig(Topology* topology, CpuList cpulist)
-      : AgentConfig(topology, std::move(cpulist)) {}
-  DynamicConfig(Topology* topology, CpuList cpulist, absl::Duration scheduler_swap_granularity,
-            absl::Duration rr_min_granularity)
-      : AgentConfig(topology, std::move(cpulist)),
-        scheduler_swap_granularity_(scheduler_swap_granularity),
-        rr_min_granularity_(rr_min_granularity) {}
-
-  absl::Duration scheduler_swap_granularity_;
-  absl::Duration rr_min_granularity_;
-};
-
 template <class EnclaveType>
 class FullDynamicAgent : public FullAgent<EnclaveType> {
-  public:
-  explicit FullDynamicAgent(DynamicConfig config) : FullAgent<EnclaveType>(config) {
+ public:
+  explicit FullDynamicAgent(AgentConfig config) : FullAgent<EnclaveType>(config) {
     scheduler_ =
-        MultiThreadedDynamicScheduler(&this->enclave_, *this->enclave_.cpus(),
-                                  config.scheduler_swap_granularity_, config.rr_min_granularity_);
+        MultiThreadedDynamicScheduler(&this->enclave_, *this->enclave_.cpus());
     this->StartAgentTasks();
     this->enclave_.Ready();
   }
@@ -194,9 +194,10 @@ class FullDynamicAgent : public FullAgent<EnclaveType> {
     }
   }
 
-  private:
+ private:
   std::unique_ptr<DynamicScheduler> scheduler_;
 };
+
 }  // namespace ghost
 
 #endif  // GHOST_SCHEDULERS_DYNAMIC_DYNAMIC_SCHEDULER_H

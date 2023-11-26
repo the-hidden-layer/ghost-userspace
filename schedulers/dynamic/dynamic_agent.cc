@@ -21,7 +21,7 @@ ABSL_FLAG(
 
 namespace ghost {
 
-static void ParseAgentConfig(DynamicConfig* config) {
+static void ParseAgentConfig(AgentConfig* config) {
   CpuList ghost_cpus =
       MachineTopology()->ParseCpuStr(absl::GetFlag(FLAGS_ghost_cpus));
   CHECK(!ghost_cpus.Empty());
@@ -35,9 +35,6 @@ static void ParseAgentConfig(DynamicConfig* config) {
     CHECK_GE(fd, 0);
     config->enclave_fd_ = fd;
   }
-
-  config->scheduler_swap_granularity_ = absl::GetFlag(FLAGS_scheduler_swap_granularity);
-  config->rr_min_granularity_ = absl::GetFlag(FLAGS_rr_min_granularity);
 }
 
 }
@@ -47,7 +44,7 @@ int main(int argc, char* argv[]) {
   absl::InitializeSymbolizer(argv[0]);
   absl::ParseCommandLine(argc, argv);
 
-  ghost::DynamicConfig config;
+  ghost::AgentConfig config;
   ghost::ParseAgentConfig(&config);
 
   printf("Initializing...\n");
