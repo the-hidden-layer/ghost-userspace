@@ -57,7 +57,7 @@ struct DynamicTask : public Task<> {
 };
 
 class DynamicRq {
- public:
+public:
   DynamicRq() = default;
   DynamicRq(const DynamicRq&) = delete;
   DynamicRq& operator=(DynamicRq&) = delete;
@@ -78,7 +78,7 @@ class DynamicRq {
 
   bool Empty() const { return Size() == 0; }
 
- private:
+private:
   mutable absl::Mutex mu_;
   std::deque<DynamicTask*> rq_ ABSL_GUARDED_BY(mu_);
 };
@@ -154,14 +154,14 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
 std::unique_ptr<DynamicScheduler> MultiThreadedDynamicScheduler(Enclave* enclave,
                                                           CpuList cpulist);
 class DynamicAgent : public LocalAgent {
- public:
+public:
   DynamicAgent(Enclave* enclave, Cpu cpu, DynamicScheduler* scheduler)
       : LocalAgent(enclave, cpu), scheduler_(scheduler) {}
 
   void AgentThread() override;
   Scheduler* AgentScheduler() const override { return scheduler_; }
 
- private:
+private:
   DynamicScheduler* scheduler_;
 };
 
