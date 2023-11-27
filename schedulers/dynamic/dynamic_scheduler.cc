@@ -4,6 +4,208 @@
 
 namespace ghost {
 
+class DynamicSchedPolicy {
+  public:
+  virtual int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) = 0;
+  virtual void addTask(DynamicTask* task) = 0;
+  virtual void endTask(DynamicTask* task) = 0;
+  virtual void preemptTask(DynamicTask* task) = 0;
+  virtual DynamicTask* pickNextTask() = 0;
+  virtual void blockTask(DynamicTask* task) = 0;
+  virtual void loadTasks(const std::vector<DynamicTask*>& tasks) = 0;
+  virtual std::vector<DynamicTask*> offloadTasks() = 0;
+};
+
+/**
+ * TODO:
+ * Maintain the list of tasks (the rq)
+ * Implement the apis to preempt, add, block, sched tasks (including manipulating the rq) 
+*/
+class FifoSchedPolicy : public DynamicSchedPolicy {
+private:
+    std::deque<DynamicTask*> rq;
+
+public:
+  int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) {
+    int64_t totalServiceTime = 0;
+    int64_t taskPossibleStartTime = 0;
+    for(const auto& task: sampledTasks) {
+      taskPossibleStartTime = std::max(taskPossibleStartTime, task->creation_time);
+      totalServiceTime += task->total_runtime + taskPossibleStartTime - task->creation_time;
+    }
+    return totalServiceTime;
+  }
+
+  // add task to back of queue
+  void addTask(DynamicTask* task) {
+    rq.emplace_back(task);
+  }
+  
+  // TODO: Do Nothing? Cuz task isn't in the queue
+  void endTask(DynamicTask* task) {
+  }
+
+  // Do nothing since task isn't removed
+  void preemptTask(DynamicTask* task) {
+    rq.emplace_front(task);
+  }
+  
+  // select front of queue
+  DynamicTask* pickNextTask() { 
+    if (rq.empty()) return nullptr;
+    auto frontTask = rq.front();
+    rq.pop_front();
+    return frontTask;
+  }
+
+  // move task to back
+  void blockTask(DynamicTask* task) {
+    rq.emplace_back(task);
+  }
+
+  void loadTasks(const std::vector<DynamicTask*>& tasks) {
+    sort(tasks.begin(), tasks.end(), 
+    [](const DynamicTask* t1, const DynamicTask* t2) {
+      return t1->creation_time < t2->creation_time;
+    });
+    for (auto t: tasks) {
+      rq.emplace_back(t);
+    }
+  }
+
+  std::vector<DynamicTask*> offloadTasks() {
+    std::vector<DynamicTask*> tasks;
+    while (!rq.empty()) {
+      tasks.emplace_back(rq.front());
+      rq.pop_front();
+    }
+    return tasks;
+  }
+
+  int64_t getPreemptionTime() {
+    return -1;
+  }
+};
+
+/**
+ * TODO:
+ * Maintain the list of tasks (the rq)
+ * Implement the apis to preempt, add, block, sched tasks (including manipulating the rq) 
+*/
+class RoundRobinSchedPolicy : public DynamicSchedPolicy {
+private:
+  std::deque<DynamicTask*> rq;
+
+public:
+  // TODO: add the right logic related to service time calculation
+  int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) {
+    
+  }
+  
+  // add to back of queue
+  void addTask(DynamicTask* task) {
+    rq.emplace_back(task);
+  }
+  
+  void endTask(DynamicTask* task) {};
+  
+  void preemptTask(DynamicTask* task) {
+    rq.emplace_back(task);
+  }
+  
+  // Will be invoked when RR quantum is exhausted
+  DynamicTask* pickNextTask() {
+    if (rq.empty()) return nullptr;
+    auto frontTask = rq.front();
+    rq.pop_front();
+    return frontTask;
+  }
+  
+  void blockTask(DynamicTask* task) {
+    rq.emplace_back(task);
+  };
+  
+  void loadTasks(const std::vector<DynamicTask*>& tasks) {};
+  
+  std::vector<DynamicTask*> offloadTasks() {
+    std::vector<DynamicTask*> tasks;
+    while (!rq.empty()) {
+      tasks.emplace_back(rq.front());
+      rq.pop_front();
+    }
+    return tasks;
+  };
+
+  int64_t getPreemptionTime() {
+    return 5e6; // 5 million nanoseconds (5 miliseconds)
+  }
+};
+
+/**
+ * TODO:
+ * Compose the current Sched policy - Done (maintaining idx)
+ * Maintain the list of supported sched policies - Done
+ * Maintain a list of sampledtasks for that cpu (since this class will be composed by the cpu) - Done
+ * Expose apis to hide the sched policy apis - Done
+ * Expose a swapsched api, that will call each of the supported policies's evaluate apis on the sampled tasks - Done
+ * and then swap policies if another policy is better - Done
+*/
+class DynamicSchedControlModule {
+  public:
+
+  std::vector<DynamicTask*> sampledTasks;
+  int curPolicyIdx = 0;
+  std::vector<DynamicSchedPolicy*> supportedPolicies = std::vector<DynamicSchedPolicy*>{
+    new FifoSchedPolicy(),
+    new RoundRobinSchedPolicy()
+  };
+
+  void addTask(DynamicTask* task) {
+    this->supportedPolicies[curPolicyIdx]->addTask(task);
+  }
+
+  void endTask(DynamicTask* task) {
+    this->sampledTasks.push_back(task);
+    this->supportedPolicies[curPolicyIdx]->endTask(task);
+  }
+
+  void preemptTask(DynamicTask* task) {
+    this->supportedPolicies[curPolicyIdx]->preemptTask(task);
+  }
+
+  DynamicTask* pickNextTask() { 
+    return this->supportedPolicies[curPolicyIdx]->pickNextTask();
+  }
+
+  void blockTask(DynamicTask* task) {
+    this->supportedPolicies[curPolicyIdx]->preemptTask(task);
+  }
+
+  void swapScheduler() {
+    // TODO: evaluate all supported policies against sampled tasks
+    int bestPolicyIdx = 0;
+    int64_t bestPolicyEvaluation = this->supportedPolicies[0]->evaluatePolicy(sampledTasks);
+
+    for(int policyIdx=1; policyIdx < this->supportedPolicies.size(); policyIdx++) {
+      int64_t curPolicyEvaluation = this->supportedPolicies[policyIdx]->evaluatePolicy(sampledTasks);
+
+      if (curPolicyEvaluation < bestPolicyEvaluation) {
+        bestPolicyIdx = policyIdx;
+        bestPolicyEvaluation = curPolicyEvaluation;
+      }
+    }
+
+    if (this->curPolicyIdx == bestPolicyIdx) return; // No use in swapping schedulers
+
+    // TODO: Load current tasks into new current policy
+    auto tasks = this->supportedPolicies[curPolicyIdx]->offloadTasks();
+    this->supportedPolicies[bestPolicyIdx]->loadTasks(tasks);
+
+    // TODO: Update the current policy
+    this->curPolicyIdx = bestPolicyIdx;
+  }
+};
+
 DynamicScheduler::DynamicScheduler(Enclave* enclave, CpuList cpulist,
                              std::shared_ptr<TaskAllocator<DynamicTask>> allocator)
     : BasicDispatchScheduler(enclave, std::move(cpulist),
@@ -59,6 +261,8 @@ void DynamicScheduler::EnclaveReady() {
       CHECK_EQ(errno, ESTALE);
     }
   }
+
+  enclave()->SetDeliverTicks(true);
 }
 
 // Implicitly thread-safe because it is only called from one agent associated
@@ -446,23 +650,6 @@ std::ostream& operator<<(std::ostream& os, const DynamicTaskState& state) {
       return os << "kOnCpu";
   }
 }
-
-class FIFO {
-  public:
-  // Requires sampledTasks to be sorted in order of task creation time
-  int64_t total_service_time(const std::vector<DynamicTask*>& sampledTasks) {
-    if (sampledTasks.size() == 0) return 0;
-
-    int64_t totalServiceTime = 0;
-    int64_t taskPossibleStartTime = 0;
-    for(const auto& task: sampledTasks) {
-      taskPossibleStartTime = std::max(taskPossibleStartTime, task->creation_time);
-      totalServiceTime += task->total_runtime + taskPossibleStartTime - task->creation_time;
-    }
-
-    return totalServiceTime;
-  }
-};
 
 // Requires sampledTasks to be sorted in order of task creation time
 // TODO - This is incorrect

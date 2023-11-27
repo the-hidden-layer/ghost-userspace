@@ -136,7 +136,7 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
   struct CpuState {
     DynamicTask* current = nullptr;
     std::unique_ptr<Channel> channel = nullptr;
-    DynamicRq run_queue;
+    DynamicRq run_queue; // TODO: CpuState should a ptr/object to a control module, which contains the scheduling policy object, which contains the runq
   } ABSL_CACHELINE_ALIGNED;
 
   inline CpuState* cpu_state(const Cpu& cpu) { return &cpu_states_[cpu.id()]; }
