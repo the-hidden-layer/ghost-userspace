@@ -49,6 +49,11 @@ struct DynamicTask : public Task<> {
   // wakeup - basically when it may be holding locks or other resources
   // that prevent other tasks from making progress.
   bool prio_boost = false;
+
+  int64_t creation_time = 0;
+  int64_t prev_on_cpu_time = 0;
+  int64_t total_runtime = 0;
+  int64_t total_time = 0;
 };
 
 class DynamicRq {

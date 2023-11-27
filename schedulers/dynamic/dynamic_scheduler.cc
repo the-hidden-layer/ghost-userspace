@@ -94,12 +94,20 @@ void DynamicScheduler::Migrate(DynamicTask* task, Cpu cpu, BarrierToken seqnum) 
   enclave()->GetAgent(cpu)->Ping();
 }
 
+std::string firstTask = "";
 void DynamicScheduler::TaskNew(DynamicTask* task, const Message& msg) {
+  if (firstTask == "") {
+    firstTask = task->gtid.describe();
+  }
+  if (task->gtid.describe() == firstTask) {
+    std::cout<<"TASK NEW: "<<task->gtid.describe()<<std::endl;
+  }
   const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
   task->seqnum = msg.seqnum();
   task->run_state = DynamicTaskState::kBlocked;
+  task->creation_time = absl::GetCurrentTimeNanos();
 
   if (payload->runnable) {
     task->run_state = DynamicTaskState::kRunnable;
@@ -136,6 +144,8 @@ void DynamicScheduler::TaskRunnable(DynamicTask* task, const Message& msg) {
 }
 
 void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
+  if (task->gtid.describe() == firstTask)
+    std::cout<<"TASK DEPART: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_departed* payload =
       static_cast<const ghost_msg_payload_task_departed*>(msg.payload());
 
@@ -157,18 +167,23 @@ void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
 }
 
 void DynamicScheduler::TaskDead(DynamicTask* task, const Message& msg) {
+  task->total_time = absl::GetCurrentTimeNanos() - task->creation_time;
+  if (task->gtid.describe() == firstTask)
+    std::cout<<"TASK DEAD: "<<task->gtid.describe()<< " " << task->creation_time << " " << task->total_runtime << " " << task->total_time << std::endl;
   CHECK(task->blocked());
   allocator()->FreeTask(task);
 }
 
 void DynamicScheduler::TaskYield(DynamicTask* task, const Message& msg) {
+  if (task->gtid.describe() == firstTask)
+    std::cout<<"TASK YIELD: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_yield* payload =
       static_cast<const ghost_msg_payload_task_yield*>(msg.payload());
 
   TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
 
   CpuState* cs = cpu_state_of(task);
-  cs->run_queue.Enqueue(task);
+  cs->run_queue.Enqueue(task); // TODO: Change this to ask the control module to place it in the queue based on scheduling policy
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
@@ -177,6 +192,8 @@ void DynamicScheduler::TaskYield(DynamicTask* task, const Message& msg) {
 }
 
 void DynamicScheduler::TaskBlocked(DynamicTask* task, const Message& msg) {
+  if (task->gtid.describe() == firstTask)
+  std::cout<<"TASK BLOCK: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_blocked* payload =
       static_cast<const ghost_msg_payload_task_blocked*>(msg.payload());
 
@@ -189,6 +206,8 @@ void DynamicScheduler::TaskBlocked(DynamicTask* task, const Message& msg) {
 }
 
 void DynamicScheduler::TaskPreempted(DynamicTask* task, const Message& msg) {
+  if (task->gtid.describe() == firstTask)
+  std::cout<<"TASK PREEMPT: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_preempt* payload =
       static_cast<const ghost_msg_payload_task_preempt*>(msg.payload());
 
@@ -197,7 +216,7 @@ void DynamicScheduler::TaskPreempted(DynamicTask* task, const Message& msg) {
   task->preempted = true;
   task->prio_boost = true;
   CpuState* cs = cpu_state_of(task);
-  cs->run_queue.Enqueue(task);
+  cs->run_queue.Enqueue(task); // TODO: Change this to ask the control module to place it in the queue based on scheduling policy
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
@@ -214,6 +233,12 @@ void DynamicScheduler::TaskOffCpu(DynamicTask* task, bool blocked,
                                bool from_switchto) {
   GHOST_DPRINT(3, stderr, "Task %s offcpu %d", task->gtid.describe(),
                task->cpu);
+  if (task->gtid.describe() == firstTask) {
+    std::cout<<"TASK OFF CPU: "<<task->gtid.describe()<<std::endl;
+  }
+
+  
+  task->total_runtime += absl::GetCurrentTimeNanos() - task->prev_on_cpu_time;
   CpuState* cs = cpu_state_of(task);
 
   if (task->oncpu()) {
@@ -233,11 +258,15 @@ void DynamicScheduler::TaskOnCpu(DynamicTask* task, Cpu cpu) {
   cs->current = task;
 
   GHOST_DPRINT(3, stderr, "Task %s oncpu %d", task->gtid.describe(), cpu.id());
+  if (task->gtid.describe() == firstTask)
+  std::cout << "TASK ON CPU: "<< task->gtid.describe() << " " << cpu.id() << std::endl;
 
   task->run_state = DynamicTaskState::kOnCpu;
   task->cpu = cpu.id();
   task->preempted = false;
   task->prio_boost = false;
+
+  task->prev_on_cpu_time = absl::GetCurrentTimeNanos();
 }
 
 void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrier,
@@ -245,6 +274,7 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
   CpuState* cs = cpu_state(cpu);
   DynamicTask* next = nullptr;
   if (!prio_boost) {
+    // TODO: Ask control module to pick the task here by applying the scheduling policy
     next = cs->current;
     if (!next) next = cs->run_queue.Dequeue();
   }
@@ -279,12 +309,15 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
 
     if (req->Commit()) {
       // Txn commit succeeded and 'next' is oncpu.
+      if (next->gtid.describe() == firstTask)
+        std::cout << "DynamicSchedule: "<< next->gtid.describe() << std::endl;
       TaskOnCpu(next, cpu);
     } else {
       GHOST_DPRINT(3, stderr, "DynamicSchedule: commit failed (state=%d)",
                    req->state());
 
       if (next == cs->current) {
+        std::cout<<"ERROR CASE CAME HERE"<<std::endl;
         TaskOffCpu(next, /*blocked=*/false, /*from_switchto=*/false);
       }
 
@@ -413,6 +446,40 @@ std::ostream& operator<<(std::ostream& os, const DynamicTaskState& state) {
       return os << "kOnCpu";
   }
 }
+
+class FIFO {
+  public:
+  // Requires sampledTasks to be sorted in order of task creation time
+  int64_t total_service_time(const std::vector<DynamicTask*>& sampledTasks) {
+    if (sampledTasks.size() == 0) return 0;
+
+    int64_t totalServiceTime = 0;
+    int64_t taskPossibleStartTime = 0;
+    for(const auto& task: sampledTasks) {
+      taskPossibleStartTime = std::max(taskPossibleStartTime, task->creation_time);
+      totalServiceTime += task->total_runtime + taskPossibleStartTime - task->creation_time;
+    }
+
+    return totalServiceTime;
+  }
+};
+
+// Requires sampledTasks to be sorted in order of task creation time
+// TODO - This is incorrect
+int64_t round_robin_total_service_time(const std::vector<DynamicTask*>& sampledTasks) {
+  if (sampledTasks.size() == 0) return 0;
+
+  int64_t totalServiceTime = 0;
+  int64_t taskPossibleStartTime = 0;
+  for(const auto& task: sampledTasks) {
+    taskPossibleStartTime = std::max(taskPossibleStartTime, task->creation_time);
+    totalServiceTime += task->total_runtime + taskPossibleStartTime - task->creation_time;
+  }
+
+  return totalServiceTime;
+}
+
+
 
 }  //  namespace ghost
 
