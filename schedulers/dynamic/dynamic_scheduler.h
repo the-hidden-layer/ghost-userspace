@@ -18,9 +18,6 @@ enum class DynamicTaskState {
   kOnCpu,     // running on cpu.
 };
 
-// For CHECK and friends.
-std::ostream& operator<<(std::ostream& os, const DynamicTaskState& state);
-
 struct DynamicTask : public Task<> {
   explicit DynamicTask(Gtid dynamic_task_gtid, ghost_sw_info sw_info)
       : Task<>(dynamic_task_gtid, sw_info) {}
@@ -55,6 +52,88 @@ struct DynamicTask : public Task<> {
   int64_t total_runtime = 0;
   int64_t total_time = 0;
 };
+
+class DynamicSchedPolicy {
+public:
+  virtual int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) = 0;
+  virtual void addTask(DynamicTask* task) = 0;
+  virtual void endTask(DynamicTask* task) = 0;
+  virtual void preemptTask(DynamicTask* task) = 0;
+  virtual DynamicTask* pickNextTask() = 0;
+  virtual void blockTask(DynamicTask* task) = 0;
+  virtual void loadTasks(std::vector<DynamicTask*> tasks) = 0;
+  virtual std::vector<DynamicTask*> offloadTasks() = 0;
+  virtual int64_t getPreemptionTime() = 0;
+};
+
+/**
+ * Compose the current Sched policy - Done (maintaining idx)
+ * Maintain the list of supported sched policies - Done
+ * Maintain a list of sampledtasks for that cpu (since this class will be composed by the cpu) - Done
+ * Expose apis to hide the sched policy apis - Done
+ * Expose a swapsched api, that will call each of the supported policies's evaluate apis on the sampled tasks - Done
+ * and then swap policies if another policy is better - Done
+*/
+class DynamicSchedControlModule {
+  public:
+  DynamicSchedControlModule ();
+
+  std::vector<DynamicTask*> sampledTasks;
+  int curPolicyIdx = 0;
+  std::vector<DynamicSchedPolicy*> supportedPolicies;
+
+  void addTask(DynamicTask* task) {
+    this->supportedPolicies[curPolicyIdx]->addTask(task);
+  }
+
+  void endTask(DynamicTask* task) {
+    this->sampledTasks.push_back(task);
+    this->supportedPolicies[curPolicyIdx]->endTask(task);
+  }
+
+  int64_t getPreemptionTime() {
+    return this->supportedPolicies[curPolicyIdx]->getPreemptionTime();
+  }
+
+  void preemptTask(DynamicTask* task) {
+    this->supportedPolicies[curPolicyIdx]->preemptTask(task);
+  }
+
+  DynamicTask* pickNextTask() { 
+    return this->supportedPolicies[curPolicyIdx]->pickNextTask();
+  }
+
+  void blockTask(DynamicTask* task) {
+    this->supportedPolicies[curPolicyIdx]->preemptTask(task);
+  }
+
+  void swapScheduler() {
+    int bestPolicyIdx = 0;
+    sort(sampledTasks.begin(), sampledTasks.end(), [](const DynamicTask* t1, const DynamicTask* t2) {
+      return t1->creation_time < t2->creation_time;
+    });
+    int64_t bestPolicyEvaluation = this->supportedPolicies[0]->evaluatePolicy(sampledTasks);
+
+    for(int policyIdx=1; policyIdx < this->supportedPolicies.size(); policyIdx++) {
+      int64_t curPolicyEvaluation = this->supportedPolicies[policyIdx]->evaluatePolicy(sampledTasks);
+
+      if (curPolicyEvaluation < bestPolicyEvaluation) {
+        bestPolicyIdx = policyIdx;
+        bestPolicyEvaluation = curPolicyEvaluation;
+      }
+    }
+
+    if (this->curPolicyIdx == bestPolicyIdx) return; // No use in swapping schedulers
+
+    auto tasks = this->supportedPolicies[curPolicyIdx]->offloadTasks();
+    this->supportedPolicies[bestPolicyIdx]->loadTasks(tasks);
+
+    this->curPolicyIdx = bestPolicyIdx;
+  }
+};
+
+// For CHECK and friends.
+std::ostream& operator<<(std::ostream& os, const DynamicTaskState& state);
 
 class DynamicRq {
 public:
@@ -123,6 +202,9 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
   void TaskBlocked(DynamicTask* task, const Message& msg) final;
   void TaskPreempted(DynamicTask* task, const Message& msg) final;
   void TaskSwitchto(DynamicTask* task, const Message& msg) final;
+  void CpuTick(const Message& msg) final;
+  void CheckPreemptTick(const Cpu& cpu);
+
 
  private:
   void DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrier,
@@ -136,7 +218,9 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
   struct CpuState {
     DynamicTask* current = nullptr;
     std::unique_ptr<Channel> channel = nullptr;
+    bool preempt_curr = false;
     DynamicRq run_queue; // TODO: CpuState should a ptr/object to a control module, which contains the scheduling policy object, which contains the runq
+    DynamicSchedControlModule dynamicSchedControlModule;
   } ABSL_CACHELINE_ALIGNED;
 
   inline CpuState* cpu_state(const Cpu& cpu) { return &cpu_states_[cpu.id()]; }
