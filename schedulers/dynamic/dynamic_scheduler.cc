@@ -37,6 +37,7 @@ namespace ghost {
 
 class FifoSchedPolicy : public DynamicSchedPolicy {
 private:
+    DynamicTask* curTask = nullptr;
     std::deque<DynamicTask*> rq;
 
 public:
@@ -57,23 +58,29 @@ public:
   
   // Do Nothing? Cuz task isn't in the queue
   void endTask(DynamicTask* task) {
+    curTask = nullptr;
+    rq.pop_front();
   }
 
   // Do nothing since task isn't removed
   void preemptTask(DynamicTask* task) {
-    rq.emplace_front(task);
+    curTask = nullptr;
+    rq.push_front(task);
   }
   
   // select front of queue
-  DynamicTask* pickNextTask() { 
+  DynamicTask* pickNextTask() {
+    if (curTask) return curTask;
     if (rq.empty()) return nullptr;
-    auto frontTask = rq.front();
+
+    curTask = rq.front();
     rq.pop_front();
-    return frontTask;
+    return curTask;
   }
 
   // move task to back
   void blockTask(DynamicTask* task) {
+    curTask = nullptr;
     rq.emplace_back(task);
   }
 
