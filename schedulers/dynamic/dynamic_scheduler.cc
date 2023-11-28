@@ -19,10 +19,11 @@ Important NOTES
 
 CODING
 1. eval RR - Done
-2. preemption api
-3. change cpu data structure to maintain controle module instead of run queue
-4. look into locks for scheduling data structures
-5. inject control module into ghost apis
+2. For fifo and round robin don’t remove current task from run queue until the task end function is called
+3. preemption api
+4. change cpu data structure to maintain controle module instead of run queue
+5. look into locks for scheduling data structures
+6. inject control module into ghost apis
 
 BENCHMARKS
 
