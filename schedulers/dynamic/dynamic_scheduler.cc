@@ -1,3 +1,30 @@
+/**
+TODO: 
+
+WRITING
+- abstract
+- intro
+- background
+- related material
+- design
+- future work (things we wanted to do for efficiency / cleaner code)
+  - strategy pattern
+  - adding more policies
+  - optimizing load/offload API
+  - experimenting with different hyperparams for different algorithms (RR)
+- 
+
+CODING
+1. eval RR
+2. preemption api
+3. change cpu data structure to maintain controle module instead of run queue
+4. look into locks for scheduling data structures
+5. inject control module into ghost apis
+
+BENCHMARKS
+
+*/
+
 #include "dynamic_scheduler.h"
 
 #include <memory>
@@ -5,7 +32,7 @@
 namespace ghost {
 
 class DynamicSchedPolicy {
-  public:
+public:
   virtual int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) = 0;
   virtual void addTask(DynamicTask* task) = 0;
   virtual void endTask(DynamicTask* task) = 0;
@@ -27,6 +54,10 @@ private:
 
 public:
   int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) {
+    sort(sampledTasks.begin(), sampledTasks.end(), 
+    [](const DynamicTask* t1, const DynamicTask* t2) {
+      return t1->creation_time < t2->creation_time;
+    });
     int64_t totalServiceTime = 0;
     int64_t taskPossibleStartTime = 0;
     for(const auto& task: sampledTasks) {
@@ -99,7 +130,45 @@ private:
 public:
   // TODO: add the right logic related to service time calculation
   int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) {
+    int64_t eval = 0;
+    sort(sampledTasks.begin(), sampledTasks.end(), 
+    [](const DynamicTask* t1, const DynamicTask* t2) {
+      return t1->creation_time < t2->creation_time;
+    });
+
+    // not actual code
+
+    int64_t work_left_for_first = 0;
+    // first task finishes before second task arrives
+
+    auto cur_time = sampledTasks[0]->creation_time;
     
+    int left = 0, right = 0;
+
+    std::vector<int64_t> workRemaining(sampledTasks.size(), 0);
+    workRemaining[0] = sampledTasks[0]->total_runtime;
+    while (left < sampledTasks.size()) {
+      // Check if left most task is done and if so, move left pointer
+      while (left < sampledTasks.size() && workRemaining[left] <= 0) {
+        eval += cur_time - sampledTasks[left]->creation_time;
+        ++left;
+      }
+
+      // Move right pointer if cur time is >= sampledTasks[right]->creationTime
+      if (right < sampledTasks.size()-1 && cur_time >= sampledTasks[right+1]->creation_time) {
+        ++right;
+      }
+    }
+
+    if (sampledTasks[0]->creation_time + sampledTasks[0]->total_runtime <= sampledTasks[1]->creation_time) {
+      eval += sampledTasks[0]->total_runtime;
+    } else {
+      work_left_for_first = sampledTasks[0]->creation_time + sampledTasks[0]->total_runtime - sampledTasks[1]->creation_time;
+      eval += (sampledTasks[1]->creation_time - sampledTasks[0]->creation_time);
+    }
+
+
+    return eval;
   }
   
   // add to back of queue
