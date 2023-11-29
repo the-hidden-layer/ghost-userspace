@@ -18,6 +18,11 @@ enum class DynamicTaskState {
   kOnCpu,     // running on cpu.
 };
 
+struct SampledTaskDetails {
+  int64_t creation_time;
+  int64_t total_runtime;
+};
+
 struct DynamicTask : public Task<> {
   explicit DynamicTask(Gtid dynamic_task_gtid, ghost_sw_info sw_info)
       : Task<>(dynamic_task_gtid, sw_info) {}
@@ -55,7 +60,7 @@ struct DynamicTask : public Task<> {
 
 class DynamicSchedPolicy {
 public:
-  virtual int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) = 0;
+  virtual int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) = 0;
   virtual void addTask(DynamicTask* task) = 0;
   virtual void endTask(DynamicTask* task) = 0;
   virtual void preemptTask(DynamicTask* task) = 0;
@@ -64,6 +69,8 @@ public:
   virtual void loadTasks(std::vector<DynamicTask*> tasks) = 0;
   virtual std::vector<DynamicTask*> offloadTasks() = 0;
   virtual int64_t getPreemptionTime() = 0;
+  
+  /* virtual void empty() = 0; */
 };
 
 /**
@@ -78,16 +85,28 @@ class DynamicSchedControlModule {
   public:
   DynamicSchedControlModule ();
 
-  std::vector<DynamicTask*> sampledTasks;
+  std::vector<SampledTaskDetails*> sampledTasks;
   int curPolicyIdx = 0;
   std::vector<DynamicSchedPolicy*> supportedPolicies;
+
+  size_t rq_size() {
+    // TODO: maybe add support for this?
+    // Only added for debug cases not needed otherwise
+    return 0;
+  }
+
+  bool empty() {
+    // TODO: maybe add support for this?
+    // Only added for debug cases not needed otherwise
+    return true;
+  };
 
   void addTask(DynamicTask* task) {
     this->supportedPolicies[curPolicyIdx]->addTask(task);
   }
 
   void endTask(DynamicTask* task) {
-    this->sampledTasks.push_back(task);
+    this->sampledTasks.push_back(new SampledTaskDetails{task->creation_time, task->total_runtime});
     this->supportedPolicies[curPolicyIdx]->endTask(task);
   }
 
@@ -109,7 +128,7 @@ class DynamicSchedControlModule {
 
   void swapScheduler() {
     int bestPolicyIdx = 0;
-    sort(sampledTasks.begin(), sampledTasks.end(), [](const DynamicTask* t1, const DynamicTask* t2) {
+    sort(sampledTasks.begin(), sampledTasks.end(), [](const SampledTaskDetails* t1, const SampledTaskDetails* t2) {
       return t1->creation_time < t2->creation_time;
     });
     int64_t bestPolicyEvaluation = this->supportedPolicies[0]->evaluatePolicy(sampledTasks);
@@ -175,7 +194,7 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
 
   bool Empty(const Cpu& cpu) {
     CpuState* cs = cpu_state(cpu);
-    return cs->run_queue.Empty();
+    return cs->dynamicSchedControlModule.empty();
   }
 
   void DumpState(const Cpu& cpu, int flags) final;
@@ -202,8 +221,8 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
   void TaskBlocked(DynamicTask* task, const Message& msg) final;
   void TaskPreempted(DynamicTask* task, const Message& msg) final;
   void TaskSwitchto(DynamicTask* task, const Message& msg) final;
-  void CpuTick(const Message& msg) final;
-  void CheckPreemptTick(const Cpu& cpu);
+  // void CpuTick(const Message& msg) final;
+  // void CheckPreemptTick(const Cpu& cpu);
 
 
  private:
@@ -219,7 +238,7 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
     DynamicTask* current = nullptr;
     std::unique_ptr<Channel> channel = nullptr;
     bool preempt_curr = false;
-    DynamicRq run_queue; // TODO: CpuState should a ptr/object to a control module, which contains the scheduling policy object, which contains the runq
+    /* DynamicRq run_queue; */ // TODO: CpuState should a ptr/object to a control module, which contains the scheduling policy object, which contains the runq
     DynamicSchedControlModule dynamicSchedControlModule;
   } ABSL_CACHELINE_ALIGNED;
 

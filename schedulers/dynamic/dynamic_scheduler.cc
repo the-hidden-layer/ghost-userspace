@@ -12,16 +12,15 @@ WRITING
   - adding more policies
   - optimizing load/offload API
   - experimenting with different hyperparams for different algorithms (RR)
-- 
 
 Important NOTES
 1. Now that CPU tick has been turned on, both the cpu tick and schedule apis are called every tic
 
 CODING
 1. eval RR - Done
-2. For fifo and round robin don’t remove current task from run queue until the task end function is called
-3. preemption api
-4. change cpu data structure to maintain controle module instead of run queue
+2. For fifo and round robin don’t remove current task from run queue until the task end function is called - Done
+3. preemption api - Done
+4. change cpu data structure to maintain controle module instead of run queue - Done
 5. look into locks for scheduling data structures
 6. inject control module into ghost apis
 
@@ -38,11 +37,12 @@ namespace ghost {
 
 class FifoSchedPolicy : public DynamicSchedPolicy {
 private:
-    DynamicTask* curTask = nullptr;
-    std::deque<DynamicTask*> rq;
+  DynamicTask* curTask = nullptr;
+  std::deque<DynamicTask*> rq;
+  mutable absl::Mutex mu_;
 
 public:
-  int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) {
+  int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
     int64_t totalServiceTime = 0;
     int64_t taskPossibleStartTime = 0;
     for(const auto& task: sampledTasks) {
@@ -54,23 +54,48 @@ public:
 
   // add task to back of queue
   void addTask(DynamicTask* task) {
-    rq.emplace_back(task);
+    absl::MutexLock lock(&mu_);
+    if (task->prio_boost) rq.emplace_front(task);
+    else rq.emplace_back(task);
   }
   
   // Do Nothing? Cuz task isn't in the queue
   void endTask(DynamicTask* task) {
-    curTask = nullptr;
-    rq.pop_front();
+    absl::MutexLock lock(&mu_);
+    if (task == curTask) {
+      curTask = nullptr;
+      return;
+    }
+    size_t size = rq.size();
+    if (size > 0) {
+      // Check if 'task' is at the back of the runqueue (common case).
+      size_t pos = size - 1;
+      if (rq[pos] == task) {
+        rq.erase(rq.cbegin() + pos);
+        task->run_state = DynamicTaskState::kRunnable;
+        return;
+      }
+      // Now search for 'task' from the beginning of the runqueue.
+      for (pos = 0; pos < size - 1; pos++) {
+        if (rq[pos] == task) {
+          rq.erase(rq.cbegin() + pos);
+          task->run_state =  DynamicTaskState::kRunnable;
+          return;
+        }
+      }
+    }
   }
 
   // Do nothing since task isn't removed
   void preemptTask(DynamicTask* task) {
+    absl::MutexLock lock(&mu_);
     curTask = nullptr;
     rq.push_front(task);
   }
   
   // select front of queue
   DynamicTask* pickNextTask() {
+    absl::MutexLock lock(&mu_);
     if (curTask) return curTask;
     if (rq.empty()) return nullptr;
 
@@ -81,11 +106,13 @@ public:
 
   // move task to back
   void blockTask(DynamicTask* task) {
+    absl::MutexLock lock(&mu_);
     curTask = nullptr;
     rq.emplace_back(task);
   }
 
   void loadTasks(std::vector<DynamicTask*> tasks) {
+    absl::MutexLock lock(&mu_);
     sort(tasks.begin(), tasks.end(), 
     [](const DynamicTask* t1, const DynamicTask* t2) {
       return t1->creation_time < t2->creation_time;
@@ -96,6 +123,7 @@ public:
   }
 
   std::vector<DynamicTask*> offloadTasks() {
+    absl::MutexLock lock(&mu_);
     std::vector<DynamicTask*> tasks;
     while (!rq.empty()) {
       tasks.emplace_back(rq.front());
@@ -111,10 +139,13 @@ public:
 
 class RoundRobinSchedPolicy : public DynamicSchedPolicy {
 private:
+  DynamicTask* curTask = nullptr;
+  std::deque<DynamicTask*> prio_rq;
   std::deque<DynamicTask*> rq;
+  mutable absl::Mutex mu_;
 
 public:
-  int64_t evaluatePolicy(const std::vector<DynamicTask*>& sampledTasks) {
+  int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
     std::vector<int64_t> remainingTime(sampledTasks.size());
     int64_t currentTime = sampledTasks[0]->creation_time;
     int lastUnqueuedTaskIdx = 1;
@@ -155,30 +186,80 @@ public:
   
   // add to back of queue
   void addTask(DynamicTask* task) {
-    rq.emplace_back(task);
+    absl::MutexLock lock(&mu_);
+    if (task->prio_boost) prio_rq.emplace_back(task);
+    else rq.emplace_back(task);
   }
   
-  void endTask(DynamicTask* task) {};
+  void endTask(DynamicTask* task) {
+    absl::MutexLock lock(&mu_);
+    if (task == curTask) {
+      curTask = nullptr;
+      return;
+    }
+    curTask = nullptr;
+    rq.pop_front();
+  };
   
   void preemptTask(DynamicTask* task) {
+    absl::MutexLock lock(&mu_);
+    curTask = nullptr;
     rq.emplace_back(task);
   }
   
   // Will be invoked when RR quantum is exhausted
   DynamicTask* pickNextTask() {
-    if (rq.empty()) return nullptr;
-    auto frontTask = rq.front();
-    rq.pop_front();
-    return frontTask;
+    absl::MutexLock lock(&mu_);
+    if (!curTask) {
+      if (!prio_rq.empty()) {
+        curTask = prio_rq.front();
+        prio_rq.pop_front();
+        return curTask;
+      }
+      if (rq.empty()) return nullptr;
+      curTask = rq.front();
+      rq.pop_front();
+      return curTask;
+    } else {
+      // Check if we should we preempt now?
+      if (absl::GetCurrentTimeNanos() - curTask->prev_on_cpu_time >= this->getPreemptionTime()) {
+        // preempt
+        this->preemptTask(this->curTask);
+        if (!prio_rq.empty()) {
+          curTask = prio_rq.front();
+          prio_rq.pop_front();
+          return curTask;
+        }
+        if (rq.empty()) return nullptr;
+        curTask = rq.front();
+        rq.pop_front();
+        return curTask;
+      } else {
+        // don't preempt so don't change anything since curTask is already the task that needs to be run
+        return curTask;
+      }
+    }
   }
   
   void blockTask(DynamicTask* task) {
+    absl::MutexLock lock(&mu_);
+    curTask = nullptr;
     rq.emplace_back(task);
   };
   
-  void loadTasks(std::vector<DynamicTask*> tasks) {};
+  void loadTasks(std::vector<DynamicTask*> tasks) {
+    absl::MutexLock lock(&mu_);
+    sort(tasks.begin(), tasks.end(), 
+    [](const DynamicTask* t1, const DynamicTask* t2) {
+      return t1->creation_time < t2->creation_time;
+    });
+    for (auto t: tasks) {
+      rq.emplace_back(t);
+    }
+  };
   
   std::vector<DynamicTask*> offloadTasks() {
+    absl::MutexLock lock(&mu_);
     std::vector<DynamicTask*> tasks;
     while (!rq.empty()) {
       tasks.emplace_back(rq.front());
@@ -233,14 +314,13 @@ void DynamicScheduler::DumpState(const Cpu& cpu, int flags) {
 
   CpuState* cs = cpu_state(cpu);
   if (!(flags & Scheduler::kDumpStateEmptyRQ) && !cs->current &&
-      cs->run_queue.Empty()) {
+      cs->dynamicSchedControlModule.empty()) {
     return;
   }
 
   const DynamicTask* current = cs->current;
-  const DynamicRq* rq = &cs->run_queue;
   absl::FPrintF(stderr, "SchedState[%d]: %s rq_l=%lu\n", cpu.id(),
-                current ? current->gtid.describe() : "none", rq->Size());
+                current ? current->gtid.describe() : "none", cs->dynamicSchedControlModule.rq_size());
 }
 
 void DynamicScheduler::EnclaveReady() {
@@ -258,7 +338,7 @@ void DynamicScheduler::EnclaveReady() {
   enclave()->SetDeliverTicks(true);
 }
 
-void DynamicScheduler::CpuTick(const Message& msg) {
+/* void DynamicScheduler::CpuTick(const Message& msg) {
   const ghost_msg_payload_cpu_tick* payload =
       static_cast<const ghost_msg_payload_cpu_tick*>(msg.payload());
   Cpu cpu = topology()->cpu(payload->cpu);
@@ -284,7 +364,7 @@ void DynamicScheduler::CheckPreemptTick(const Cpu& cpu) {
       cs->preempt_curr = true;
     }
   }
-}
+} */
 
 // Implicitly thread-safe because it is only called from one agent associated
 // with the default queue.
@@ -313,12 +393,13 @@ void DynamicScheduler::Migrate(DynamicTask* task, Cpu cpu, BarrierToken seqnum) 
 
   // Make task visible in the new runqueue *after* changing the association
   // (otherwise the task can get oncpu while producing into the old queue).
-  cs->run_queue.Enqueue(task);
+  cs->dynamicSchedControlModule.addTask(task);
 
   // Get the agent's attention so it notices the new task.
   enclave()->GetAgent(cpu)->Ping();
 }
 
+// TODO: Remove All debug statements added by us
 std::string firstTask = "";
 void DynamicScheduler::TaskNew(DynamicTask* task, const Message& msg) {
   if (firstTask == "") {
@@ -364,10 +445,11 @@ void DynamicScheduler::TaskRunnable(DynamicTask* task, const Message& msg) {
     Migrate(task, cpu, msg.seqnum());
   } else {
     CpuState* cs = cpu_state_of(task);
-    cs->run_queue.Enqueue(task);
+    cs->dynamicSchedControlModule.addTask(task);
   }
 }
 
+// TODO: Understand what tasks can be called with this api
 void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
   if (task->gtid.describe() == firstTask)
     std::cout<<"TASK DEPART: "<<task->gtid.describe()<<std::endl;
@@ -378,7 +460,7 @@ void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
     TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
   } else if (task->queued()) {
     CpuState* cs = cpu_state_of(task);
-    cs->run_queue.Erase(task);
+    cs->dynamicSchedControlModule.endTask(task);
   } else {
     CHECK(task->blocked());
   }
@@ -391,6 +473,7 @@ void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
   allocator()->FreeTask(task);
 }
 
+// TODO: Understand what tasks can be called with this api
 void DynamicScheduler::TaskDead(DynamicTask* task, const Message& msg) {
   task->total_time = absl::GetCurrentTimeNanos() - task->creation_time;
   if (task->gtid.describe() == firstTask)
@@ -408,7 +491,7 @@ void DynamicScheduler::TaskYield(DynamicTask* task, const Message& msg) {
   TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
 
   CpuState* cs = cpu_state_of(task);
-  cs->run_queue.Enqueue(task); // TODO: Change this to ask the control module to place it in the queue based on scheduling policy
+  cs->dynamicSchedControlModule.addTask(task);
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
@@ -439,9 +522,8 @@ void DynamicScheduler::TaskPreempted(DynamicTask* task, const Message& msg) {
   TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
 
   task->preempted = true;
-  task->prio_boost = true;
   CpuState* cs = cpu_state_of(task);
-  cs->run_queue.Enqueue(task); // TODO: Change this to ask the control module to place it in the queue based on scheduling policy
+  cs->dynamicSchedControlModule.preemptTask(task);
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
@@ -498,12 +580,13 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
                                  bool prio_boost) {
   CpuState* cs = cpu_state(cpu);
   DynamicTask* next = nullptr;
-  if (!prio_boost) {
-    // TODO: Ask control module to pick the task here by applying the scheduling policy
-    // cs->preempt_curr tells us is the existing task was preempted or not
-    next = cs->current;
-    if (!next) next = cs->run_queue.Dequeue();
+
+  if (cs->current && prio_boost) {
+    auto task = cs->current;
+    this->TaskOffCpu(task, /*blocked=*/false, true);
+    cs->dynamicSchedControlModule.preemptTask(task);
   }
+  next = cs->dynamicSchedControlModule.pickNextTask();
 
   GHOST_DPRINT(3, stderr, "DynamicSchedule %s on %s cpu %d ",
                next ? next->gtid.describe() : "idling",
@@ -549,13 +632,13 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
 
       // Txn commit failed so push 'next' to the front of runqueue.
       next->prio_boost = true;
-      cs->run_queue.Enqueue(next);
+      cs->dynamicSchedControlModule.addTask(next);
     }
   } else {
     // If LocalYield is due to 'prio_boost' then instruct the kernel to
     // return control back to the agent when CPU is idle.
     int flags = 0;
-    if (prio_boost && (cs->current || !cs->run_queue.Empty())) {
+    if (prio_boost && (cs->current || !cs->dynamicSchedControlModule.empty())) {
       flags = RTLA_ON_IDLE;
     }
     req->LocalYield(agent_barrier, flags);
@@ -578,7 +661,7 @@ void DynamicScheduler::Schedule(const Cpu& cpu, const StatusWord& agent_sw) {
   DynamicSchedule(cpu, agent_barrier, agent_sw.boosted_priority());
 }
 
-void DynamicRq::Enqueue(DynamicTask* task) {
+/* void DynamicRq::Enqueue(DynamicTask* task) {
   CHECK_GE(task->cpu, 0);
   CHECK_EQ(task->run_state, DynamicTaskState::kRunnable);
 
@@ -589,9 +672,9 @@ void DynamicRq::Enqueue(DynamicTask* task) {
     rq_.push_front(task);
   else
     rq_.push_back(task);
-}
+} */
 
-DynamicTask* DynamicRq::Dequeue() {
+/* DynamicTask* DynamicRq::Dequeue() {
   absl::MutexLock lock(&mu_);
   if (rq_.empty()) return nullptr;
 
@@ -600,9 +683,9 @@ DynamicTask* DynamicRq::Dequeue() {
   task->run_state = DynamicTaskState::kRunnable;
   rq_.pop_front();
   return task;
-}
+} */
 
-void DynamicRq::Erase(DynamicTask* task) {
+/* void DynamicRq::Erase(DynamicTask* task) {
   CHECK_EQ(task->run_state, DynamicTaskState::kQueued);
   absl::MutexLock lock(&mu_);
   size_t size = rq_.size();
@@ -625,7 +708,7 @@ void DynamicRq::Erase(DynamicTask* task) {
     }
   }
   CHECK(false);
-}
+} */
 
 std::unique_ptr<DynamicScheduler> MultiThreadedDynamicScheduler(Enclave* enclave,
                                                           CpuList cpulist) {
