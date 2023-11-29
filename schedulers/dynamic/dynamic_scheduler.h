@@ -69,6 +69,8 @@ public:
   virtual void loadTasks(std::vector<DynamicTask*> tasks) = 0;
   virtual std::vector<DynamicTask*> offloadTasks() = 0;
   virtual int64_t getPreemptionTime() = 0;
+  virtual size_t rq_size() = 0;
+  virtual bool isEmpty() = 0;
   
   /* virtual void empty() = 0; */
 };
@@ -92,13 +94,13 @@ class DynamicSchedControlModule {
   size_t rq_size() {
     // TODO: maybe add support for this?
     // Only added for debug cases not needed otherwise
-    return 0;
+    return this->supportedPolicies[curPolicyIdx]->rq_size();
   }
 
   bool empty() {
     // TODO: maybe add support for this?
     // Only added for debug cases not needed otherwise
-    return true;
+    return this->supportedPolicies[curPolicyIdx]->isEmpty();
   };
 
   void addTask(DynamicTask* task) {
@@ -123,7 +125,7 @@ class DynamicSchedControlModule {
   }
 
   void blockTask(DynamicTask* task) {
-    this->supportedPolicies[curPolicyIdx]->preemptTask(task);
+    this->supportedPolicies[curPolicyIdx]->blockTask(task);
   }
 
   void swapScheduler() {
@@ -238,7 +240,6 @@ class DynamicScheduler : public BasicDispatchScheduler<DynamicTask> {
     DynamicTask* current = nullptr;
     std::unique_ptr<Channel> channel = nullptr;
     bool preempt_curr = false;
-    /* DynamicRq run_queue; */ // TODO: CpuState should a ptr/object to a control module, which contains the scheduling policy object, which contains the runq
     DynamicSchedControlModule dynamicSchedControlModule;
   } ABSL_CACHELINE_ALIGNED;
 

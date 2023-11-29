@@ -37,7 +37,6 @@ namespace ghost {
 
 class FifoSchedPolicy : public DynamicSchedPolicy {
 private:
-  DynamicTask* curTask = nullptr;
   std::deque<DynamicTask*> rq;
   mutable absl::Mutex mu_;
 
@@ -55,17 +54,14 @@ public:
   // add task to back of queue
   void addTask(DynamicTask* task) {
     absl::MutexLock lock(&mu_);
-    if (task->prio_boost) rq.emplace_front(task);
-    else rq.emplace_back(task);
+    task->run_state = DynamicTaskState::kQueued;
+    if (task->prio_boost) rq.push_front(task);
+    else rq.push_back(task);
   }
   
   // Do Nothing? Cuz task isn't in the queue
   void endTask(DynamicTask* task) {
     absl::MutexLock lock(&mu_);
-    if (task == curTask) {
-      curTask = nullptr;
-      return;
-    }
     size_t size = rq.size();
     if (size > 0) {
       // Check if 'task' is at the back of the runqueue (common case).
@@ -89,26 +85,35 @@ public:
   // Do nothing since task isn't removed
   void preemptTask(DynamicTask* task) {
     absl::MutexLock lock(&mu_);
-    curTask = nullptr;
     rq.push_front(task);
   }
+
+  size_t rq_size() {
+    absl::MutexLock lock(&mu_);
+    return rq.size();
+  }
+
+  bool isEmpty() { return rq_size() == 0; }
   
   // select front of queue
   DynamicTask* pickNextTask() {
     absl::MutexLock lock(&mu_);
-    if (curTask) return curTask;
     if (rq.empty()) return nullptr;
 
-    curTask = rq.front();
+    DynamicTask* curTask = rq.front();
+    // GHOST_DPRINT(3, stderr, "Manav FIFO pickNextTask DynamicSchedule %s",
+    //            curTask ? curTask->gtid.describe() : "idling");
+    curTask->run_state = DynamicTaskState::kRunnable;
+    
     rq.pop_front();
     return curTask;
   }
 
   // move task to back
   void blockTask(DynamicTask* task) {
-    absl::MutexLock lock(&mu_);
-    curTask = nullptr;
-    rq.emplace_back(task);
+    // absl::MutexLock lock(&mu_);
+    // curTask = nullptr;
+    // rq.push_back(task);
   }
 
   void loadTasks(std::vector<DynamicTask*> tasks) {
@@ -118,7 +123,7 @@ public:
       return t1->creation_time < t2->creation_time;
     });
     for (auto t: tasks) {
-      rq.emplace_back(t);
+      rq.push_back(t);
     }
   }
 
@@ -126,7 +131,7 @@ public:
     absl::MutexLock lock(&mu_);
     std::vector<DynamicTask*> tasks;
     while (!rq.empty()) {
-      tasks.emplace_back(rq.front());
+      tasks.push_back(rq.front());
       rq.pop_front();
     }
     return tasks;
@@ -187,8 +192,8 @@ public:
   // add to back of queue
   void addTask(DynamicTask* task) {
     absl::MutexLock lock(&mu_);
-    if (task->prio_boost) prio_rq.emplace_back(task);
-    else rq.emplace_back(task);
+    if (task->prio_boost) prio_rq.push_back(task);
+    else rq.push_back(task);
   }
   
   void endTask(DynamicTask* task) {
@@ -204,7 +209,7 @@ public:
   void preemptTask(DynamicTask* task) {
     absl::MutexLock lock(&mu_);
     curTask = nullptr;
-    rq.emplace_back(task);
+    rq.push_back(task);
   }
   
   // Will be invoked when RR quantum is exhausted
@@ -244,7 +249,7 @@ public:
   void blockTask(DynamicTask* task) {
     absl::MutexLock lock(&mu_);
     curTask = nullptr;
-    rq.emplace_back(task);
+    rq.push_back(task);
   };
   
   void loadTasks(std::vector<DynamicTask*> tasks) {
@@ -254,7 +259,7 @@ public:
       return t1->creation_time < t2->creation_time;
     });
     for (auto t: tasks) {
-      rq.emplace_back(t);
+      rq.push_back(t);
     }
   };
   
@@ -262,7 +267,7 @@ public:
     absl::MutexLock lock(&mu_);
     std::vector<DynamicTask*> tasks;
     while (!rq.empty()) {
-      tasks.emplace_back(rq.front());
+      tasks.push_back(rq.front());
       rq.pop_front();
     }
     return tasks;
@@ -275,8 +280,7 @@ public:
 
 DynamicSchedControlModule :: DynamicSchedControlModule() {
   supportedPolicies = std::vector<DynamicSchedPolicy*>{
-    new FifoSchedPolicy(),
-    new RoundRobinSchedPolicy()
+    new FifoSchedPolicy()
   };
 }
 
@@ -399,15 +403,7 @@ void DynamicScheduler::Migrate(DynamicTask* task, Cpu cpu, BarrierToken seqnum) 
   enclave()->GetAgent(cpu)->Ping();
 }
 
-// TODO: Remove All debug statements added by us
-std::string firstTask = "";
 void DynamicScheduler::TaskNew(DynamicTask* task, const Message& msg) {
-  if (firstTask == "") {
-    firstTask = task->gtid.describe();
-  }
-  if (task->gtid.describe() == firstTask) {
-    std::cout<<"TASK NEW: "<<task->gtid.describe()<<std::endl;
-  }
   const ghost_msg_payload_task_new* payload =
       static_cast<const ghost_msg_payload_task_new*>(msg.payload());
 
@@ -451,8 +447,8 @@ void DynamicScheduler::TaskRunnable(DynamicTask* task, const Message& msg) {
 
 // TODO: Understand what tasks can be called with this api
 void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
-  if (task->gtid.describe() == firstTask)
-    std::cout<<"TASK DEPART: "<<task->gtid.describe()<<std::endl;
+  // if (task->gtid.describe() == firstTask)
+  //   std::cout<<"TASK DEPART: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_departed* payload =
       static_cast<const ghost_msg_payload_task_departed*>(msg.payload());
 
@@ -475,16 +471,13 @@ void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
 
 // TODO: Understand what tasks can be called with this api
 void DynamicScheduler::TaskDead(DynamicTask* task, const Message& msg) {
-  task->total_time = absl::GetCurrentTimeNanos() - task->creation_time;
-  if (task->gtid.describe() == firstTask)
-    std::cout<<"TASK DEAD: "<<task->gtid.describe()<< " " << task->creation_time << " " << task->total_runtime << " " << task->total_time << std::endl;
   CHECK(task->blocked());
   allocator()->FreeTask(task);
 }
 
 void DynamicScheduler::TaskYield(DynamicTask* task, const Message& msg) {
-  if (task->gtid.describe() == firstTask)
-    std::cout<<"TASK YIELD: "<<task->gtid.describe()<<std::endl;
+  // if (task->gtid.describe() == firstTask)
+  //   std::cout<<"TASK YIELD: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_yield* payload =
       static_cast<const ghost_msg_payload_task_yield*>(msg.payload());
 
@@ -500,12 +493,13 @@ void DynamicScheduler::TaskYield(DynamicTask* task, const Message& msg) {
 }
 
 void DynamicScheduler::TaskBlocked(DynamicTask* task, const Message& msg) {
-  if (task->gtid.describe() == firstTask)
-  std::cout<<"TASK BLOCK: "<<task->gtid.describe()<<std::endl;
+  // if (task->gtid.describe() == firstTask)
+  // std::cout<<"TASK BLOCK: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_blocked* payload =
       static_cast<const ghost_msg_payload_task_blocked*>(msg.payload());
 
   TaskOffCpu(task, /*blocked=*/true, payload->from_switchto);
+  
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
@@ -514,16 +508,17 @@ void DynamicScheduler::TaskBlocked(DynamicTask* task, const Message& msg) {
 }
 
 void DynamicScheduler::TaskPreempted(DynamicTask* task, const Message& msg) {
-  if (task->gtid.describe() == firstTask)
-  std::cout<<"TASK PREEMPT: "<<task->gtid.describe()<<std::endl;
+  // if (task->gtid.describe() == firstTask)
+  // std::cout<<"TASK PREEMPT: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_preempt* payload =
       static_cast<const ghost_msg_payload_task_preempt*>(msg.payload());
 
   TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
 
   task->preempted = true;
+  task->prio_boost = true;
   CpuState* cs = cpu_state_of(task);
-  cs->dynamicSchedControlModule.preemptTask(task);
+  cs->dynamicSchedControlModule.addTask(task);
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
@@ -540,9 +535,6 @@ void DynamicScheduler::TaskOffCpu(DynamicTask* task, bool blocked,
                                bool from_switchto) {
   GHOST_DPRINT(3, stderr, "Task %s offcpu %d", task->gtid.describe(),
                task->cpu);
-  if (task->gtid.describe() == firstTask) {
-    std::cout<<"TASK OFF CPU: "<<task->gtid.describe()<<std::endl;
-  }
 
   
   task->total_runtime += absl::GetCurrentTimeNanos() - task->prev_on_cpu_time;
@@ -565,8 +557,6 @@ void DynamicScheduler::TaskOnCpu(DynamicTask* task, Cpu cpu) {
   cs->current = task;
 
   GHOST_DPRINT(3, stderr, "Task %s oncpu %d", task->gtid.describe(), cpu.id());
-  if (task->gtid.describe() == firstTask)
-  std::cout << "TASK ON CPU: "<< task->gtid.describe() << " " << cpu.id() << std::endl;
 
   task->run_state = DynamicTaskState::kOnCpu;
   task->cpu = cpu.id();
@@ -581,12 +571,16 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
   CpuState* cs = cpu_state(cpu);
   DynamicTask* next = nullptr;
 
-  if (cs->current && prio_boost) {
-    auto task = cs->current;
-    this->TaskOffCpu(task, /*blocked=*/false, true);
-    cs->dynamicSchedControlModule.preemptTask(task);
+  if (!prio_boost) {
+    next = cs->current;
+    // GHOST_DPRINT(3, stderr, "Manav Debug 1 DynamicSchedule %s on %s cpu %d ",
+    //            next ? next->gtid.describe() : "idling",
+    //            prio_boost ? "prio-boosted" : "", cpu.id());
+    if (!next) next = cs->dynamicSchedControlModule.pickNextTask();
+    // GHOST_DPRINT(3, stderr, "Manav Debug 2 DynamicSchedule %s on %s cpu %d ",
+    //            next ? next->gtid.describe() : "idling",
+    //            prio_boost ? "prio-boosted" : "", cpu.id());
   }
-  next = cs->dynamicSchedControlModule.pickNextTask();
 
   GHOST_DPRINT(3, stderr, "DynamicSchedule %s on %s cpu %d ",
                next ? next->gtid.describe() : "idling",
@@ -618,15 +612,15 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
 
     if (req->Commit()) {
       // Txn commit succeeded and 'next' is oncpu.
-      if (next->gtid.describe() == firstTask)
-        std::cout << "DynamicSchedule: "<< next->gtid.describe() << std::endl;
+      // if (next->gtid.describe() == firstTask)
+        // std::cout << "DynamicSchedule: "<< next->gtid.describe() << std::endl;
       TaskOnCpu(next, cpu);
     } else {
       GHOST_DPRINT(3, stderr, "DynamicSchedule: commit failed (state=%d)",
                    req->state());
 
       if (next == cs->current) {
-        std::cout<<"ERROR CASE CAME HERE"<<std::endl;
+        // std::cout<<"ERROR CASE CAME HERE"<<std::endl;
         TaskOffCpu(next, /*blocked=*/false, /*from_switchto=*/false);
       }
 
