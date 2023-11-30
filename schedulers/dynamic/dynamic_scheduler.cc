@@ -84,8 +84,6 @@ public:
 
   // Do nothing since task isn't removed
   void preemptTask(DynamicTask* task) {
-    absl::MutexLock lock(&mu_);
-    rq.push_front(task);
   }
 
   size_t rq_size() {
@@ -101,8 +99,6 @@ public:
     if (rq.empty()) return nullptr;
 
     DynamicTask* curTask = rq.front();
-    // GHOST_DPRINT(3, stderr, "Manav FIFO pickNextTask DynamicSchedule %s",
-    //            curTask ? curTask->gtid.describe() : "idling");
     curTask->run_state = DynamicTaskState::kRunnable;
     
     rq.pop_front();
@@ -144,7 +140,6 @@ public:
 
 class RoundRobinSchedPolicy : public DynamicSchedPolicy {
 private:
-  DynamicTask* curTask = nullptr;
   std::deque<DynamicTask*> prio_rq;
   std::deque<DynamicTask*> rq;
   mutable absl::Mutex mu_;
@@ -192,64 +187,88 @@ public:
   // add to back of queue
   void addTask(DynamicTask* task) {
     absl::MutexLock lock(&mu_);
-    if (task->prio_boost) prio_rq.push_back(task);
+    task->run_state = DynamicTaskState::kQueued;
+    if (task->prio_boost) rq.push_back(task);
     else rq.push_back(task);
   }
   
   void endTask(DynamicTask* task) {
-    absl::MutexLock lock(&mu_);
-    if (task == curTask) {
-      curTask = nullptr;
-      return;
+    if (task->prio_boost) {
+      absl::MutexLock lock(&mu_);
+      size_t size = rq.size();
+      if (size > 0) {
+      // Check if 'task' is at the back of the runqueue (common case).
+        size_t pos = size - 1;
+        if (rq[pos] == task) {
+          rq.erase(rq.cbegin() + pos);
+          task->run_state = DynamicTaskState::kRunnable;
+          return;
+        }
+        // Now search for 'task' from the beginning of the runqueue.
+        for (pos = 0; pos < size - 1; pos++) {
+          if (rq[pos] == task) {
+            rq.erase(rq.cbegin() + pos);
+            task->run_state =  DynamicTaskState::kRunnable;
+            return;
+          }
+        }
+      }
+    } else {
+      absl::MutexLock lock(&mu_);
+      size_t size = rq.size();
+      if (size > 0) {
+      // Check if 'task' is at the back of the runqueue (common case).
+        size_t pos = size - 1;
+        if (rq[pos] == task) {
+          rq.erase(rq.cbegin() + pos);
+          task->run_state = DynamicTaskState::kRunnable;
+          return;
+        }
+        // Now search for 'task' from the beginning of the runqueue.
+        for (pos = 0; pos < size - 1; pos++) {
+          if (rq[pos] == task) {
+            rq.erase(rq.cbegin() + pos);
+            task->run_state =  DynamicTaskState::kRunnable;
+            return;
+          }
+        }
+      }
     }
-    curTask = nullptr;
-    rq.pop_front();
-  };
+  }
   
   void preemptTask(DynamicTask* task) {
     absl::MutexLock lock(&mu_);
-    curTask = nullptr;
-    rq.push_back(task);
+    task->run_state = DynamicTaskState::kQueued;
+    if (task->prio_boost) rq.push_back(task);
+    else rq.push_back(task);
   }
+
+  size_t rq_size() {
+    absl::MutexLock lock(&mu_);
+    return prio_rq.size() + rq.size();
+  }
+
+  bool isEmpty() { return rq_size() == 0; }
   
   // Will be invoked when RR quantum is exhausted
   DynamicTask* pickNextTask() {
     absl::MutexLock lock(&mu_);
-    if (!curTask) {
-      if (!prio_rq.empty()) {
-        curTask = prio_rq.front();
-        prio_rq.pop_front();
-        return curTask;
-      }
-      if (rq.empty()) return nullptr;
-      curTask = rq.front();
-      rq.pop_front();
+    if (!prio_rq.empty()) {
+      DynamicTask* curTask = prio_rq.front();
+      curTask->run_state = DynamicTaskState::kRunnable;
+      prio_rq.pop_front();
       return curTask;
-    } else {
-      // Check if we should we preempt now?
-      if (absl::GetCurrentTimeNanos() - curTask->prev_on_cpu_time >= this->getPreemptionTime()) {
-        // preempt
-        this->preemptTask(this->curTask);
-        if (!prio_rq.empty()) {
-          curTask = prio_rq.front();
-          prio_rq.pop_front();
-          return curTask;
-        }
-        if (rq.empty()) return nullptr;
-        curTask = rq.front();
-        rq.pop_front();
-        return curTask;
-      } else {
-        // don't preempt so don't change anything since curTask is already the task that needs to be run
-        return curTask;
-      }
     }
+
+    if (rq.empty()) return nullptr;
+
+    DynamicTask* curTask = rq.front();
+    curTask->run_state = DynamicTaskState::kRunnable;
+    rq.pop_front();
+    return curTask;
   }
   
   void blockTask(DynamicTask* task) {
-    absl::MutexLock lock(&mu_);
-    curTask = nullptr;
-    rq.push_back(task);
   };
   
   void loadTasks(std::vector<DynamicTask*> tasks) {
@@ -274,13 +293,13 @@ public:
   };
 
   int64_t getPreemptionTime() {
-    return 5e6; // 5 million nanoseconds (5 miliseconds)
+    return 10000000; // 5 nanoseconds for experimenting
   }
 };
 
 DynamicSchedControlModule :: DynamicSchedControlModule() {
   supportedPolicies = std::vector<DynamicSchedPolicy*>{
-    new FifoSchedPolicy()
+    new RoundRobinSchedPolicy()
   };
 }
 
@@ -512,13 +531,18 @@ void DynamicScheduler::TaskPreempted(DynamicTask* task, const Message& msg) {
   // std::cout<<"TASK PREEMPT: "<<task->gtid.describe()<<std::endl;
   const ghost_msg_payload_task_preempt* payload =
       static_cast<const ghost_msg_payload_task_preempt*>(msg.payload());
-
-  TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
-
-  task->preempted = true;
-  task->prio_boost = true;
+    
   CpuState* cs = cpu_state_of(task);
-  cs->dynamicSchedControlModule.addTask(task);
+  
+  if (absl::GetCurrentTimeNanos() - task->prev_on_cpu_time >= cs->dynamicSchedControlModule.getPreemptionTime()) {
+    std::cout<<"Kernel Preempt accepted"<<std::endl;
+    // TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
+    // task->preempted = true;
+    // task->prio_boost = true;
+    // cs->dynamicSchedControlModule.addTask(task);
+  } else {
+    std::cout<<"Kernel Preempt rejected"<<std::endl;
+  }
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
@@ -533,12 +557,13 @@ void DynamicScheduler::TaskSwitchto(DynamicTask* task, const Message& msg) {
 
 void DynamicScheduler::TaskOffCpu(DynamicTask* task, bool blocked,
                                bool from_switchto) {
-  GHOST_DPRINT(3, stderr, "Task %s offcpu %d", task->gtid.describe(),
-               task->cpu);
-
   
-  task->total_runtime += absl::GetCurrentTimeNanos() - task->prev_on_cpu_time;
+  auto curTime = absl::GetCurrentTimeNanos();
+  task->total_runtime += curTime - task->prev_on_cpu_time;
   CpuState* cs = cpu_state_of(task);
+
+  GHOST_DPRINT(3, stderr, "Task %s offcpu %d oncpu time: %lld off cpu time: %lld", task->gtid.describe(), task->cpu, task->prev_on_cpu_time, curTime);
+
 
   if (task->oncpu()) {
     CHECK_EQ(cs->current, task);
@@ -548,6 +573,8 @@ void DynamicScheduler::TaskOffCpu(DynamicTask* task, bool blocked,
     CHECK_EQ(task->run_state, DynamicTaskState::kBlocked);
   }
 
+  task->prev_on_cpu_time = -1;
+
   task->run_state =
       blocked ? DynamicTaskState::kBlocked : DynamicTaskState::kRunnable;
 }
@@ -556,14 +583,14 @@ void DynamicScheduler::TaskOnCpu(DynamicTask* task, Cpu cpu) {
   CpuState* cs = cpu_state(cpu);
   cs->current = task;
 
-  GHOST_DPRINT(3, stderr, "Task %s oncpu %d", task->gtid.describe(), cpu.id());
-
   task->run_state = DynamicTaskState::kOnCpu;
   task->cpu = cpu.id();
   task->preempted = false;
   task->prio_boost = false;
 
-  task->prev_on_cpu_time = absl::GetCurrentTimeNanos();
+  if (task->prev_on_cpu_time == -1) task->prev_on_cpu_time = absl::GetCurrentTimeNanos();
+
+  GHOST_DPRINT(3, stderr, "Task %s oncpu %d time: %lld", task->gtid.describe(), cpu.id(), task->prev_on_cpu_time);
 }
 
 void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrier,
@@ -573,13 +600,20 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
 
   if (!prio_boost) {
     next = cs->current;
-    // GHOST_DPRINT(3, stderr, "Manav Debug 1 DynamicSchedule %s on %s cpu %d ",
-    //            next ? next->gtid.describe() : "idling",
-    //            prio_boost ? "prio-boosted" : "", cpu.id());
-    if (!next) next = cs->dynamicSchedControlModule.pickNextTask();
-    // GHOST_DPRINT(3, stderr, "Manav Debug 2 DynamicSchedule %s on %s cpu %d ",
-    //            next ? next->gtid.describe() : "idling",
-    //            prio_boost ? "prio-boosted" : "", cpu.id());
+
+    // Check if task should be preempted
+/*     std::cout<<absl::GetCurrentTimeNanos()<<std::endl;
+ */ 
+auto curTime = absl::GetCurrentTimeNanos();
+    if (!next) next = cs->dynamicSchedControlModule.pickNextTask(); // For some reason cs->current is null meaning task is going off cpu before sched
+    else if (cs->dynamicSchedControlModule.getPreemptionTime() > 0 
+    && curTime - next->prev_on_cpu_time >= cs->dynamicSchedControlModule.getPreemptionTime()) {
+      std::cout << "Sched preempt" << std::endl;
+      next->total_runtime += curTime - next->prev_on_cpu_time;
+      next->prev_on_cpu_time = -1;
+      cs->dynamicSchedControlModule.preemptTask(next);
+      next = cs->dynamicSchedControlModule.pickNextTask();
+    }
   }
 
   GHOST_DPRINT(3, stderr, "DynamicSchedule %s on %s cpu %d ",

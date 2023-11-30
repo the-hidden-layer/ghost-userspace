@@ -53,7 +53,7 @@ struct DynamicTask : public Task<> {
   bool prio_boost = false;
 
   int64_t creation_time = 0;
-  int64_t prev_on_cpu_time = 0;
+  int64_t prev_on_cpu_time = -1;
   int64_t total_runtime = 0;
   int64_t total_time = 0;
 };
