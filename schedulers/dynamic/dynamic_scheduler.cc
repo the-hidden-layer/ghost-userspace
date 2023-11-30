@@ -42,11 +42,21 @@ private:
 
 public:
   int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
+    std::cout<<"Evaluating FIFO"<<std::endl;
+    for(auto sampledTask: sampledTasks) {
+      std::cout<<sampledTask->creation_time<<" "<<sampledTask->total_runtime<<std::endl;
+    }
     int64_t totalServiceTime = 0;
-    int64_t taskPossibleStartTime = 0;
+
+    int64_t curTaskStartTime = 0;
+    int64_t earliestStartTime = 0;
     for(const auto& task: sampledTasks) {
-      taskPossibleStartTime = std::max(taskPossibleStartTime, task->creation_time);
-      totalServiceTime += task->total_runtime + taskPossibleStartTime - task->creation_time;
+      curTaskStartTime = std::max(earliestStartTime, task->creation_time);
+      totalServiceTime += 
+      /* waiting in queue time after creation */ (curTaskStartTime - task->creation_time) +
+      /* on cpu time*/ task->total_runtime;
+
+      earliestStartTime = curTaskStartTime + task->total_runtime;
     }
     return totalServiceTime;
   }
@@ -146,6 +156,10 @@ private:
 
 public:
   int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
+     std::cout<<"Evaluating RoundRobin"<<std::endl;
+    for(auto sampledTask: sampledTasks) {
+      std::cout<<sampledTask->creation_time<<" "<<sampledTask->total_runtime<<std::endl;
+    }
     std::vector<int64_t> remainingTime(sampledTasks.size());
     int64_t currentTime = sampledTasks[0]->creation_time;
     int lastUnqueuedTaskIdx = 1;
@@ -299,7 +313,8 @@ public:
 
 DynamicSchedControlModule :: DynamicSchedControlModule() {
   supportedPolicies = std::vector<DynamicSchedPolicy*>{
-    new RoundRobinSchedPolicy()
+    new FifoSchedPolicy(),
+    new RoundRobinSchedPolicy(),
   };
 }
 
@@ -475,6 +490,9 @@ void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
     TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
   } else if (task->queued()) {
     CpuState* cs = cpu_state_of(task);
+    auto curTime = absl::GetCurrentTimeNanos();
+    if (task->prev_on_cpu_time != -1) task->total_runtime += curTime - task->prev_on_cpu_time;
+    task->prev_on_cpu_time = -1;
     cs->dynamicSchedControlModule.endTask(task);
   } else {
     CHECK(task->blocked());
@@ -491,6 +509,11 @@ void DynamicScheduler::TaskDeparted(DynamicTask* task, const Message& msg) {
 // TODO: Understand what tasks can be called with this api
 void DynamicScheduler::TaskDead(DynamicTask* task, const Message& msg) {
   CHECK(task->blocked());
+  CpuState* cs = cpu_state_of(task);
+  auto curTime = absl::GetCurrentTimeNanos();
+  if (task->prev_on_cpu_time != -1) task->total_runtime += curTime - task->prev_on_cpu_time;
+  task->prev_on_cpu_time = -1;
+  cs->dynamicSchedControlModule.endTask(task);
   allocator()->FreeTask(task);
 }
 
@@ -533,16 +556,6 @@ void DynamicScheduler::TaskPreempted(DynamicTask* task, const Message& msg) {
       static_cast<const ghost_msg_payload_task_preempt*>(msg.payload());
     
   CpuState* cs = cpu_state_of(task);
-  
-  if (absl::GetCurrentTimeNanos() - task->prev_on_cpu_time >= cs->dynamicSchedControlModule.getPreemptionTime()) {
-    std::cout<<"Kernel Preempt accepted"<<std::endl;
-    // TaskOffCpu(task, /*blocked=*/false, payload->from_switchto);
-    // task->preempted = true;
-    // task->prio_boost = true;
-    // cs->dynamicSchedControlModule.addTask(task);
-  } else {
-    std::cout<<"Kernel Preempt rejected"<<std::endl;
-  }
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
@@ -559,10 +572,13 @@ void DynamicScheduler::TaskOffCpu(DynamicTask* task, bool blocked,
                                bool from_switchto) {
   
   auto curTime = absl::GetCurrentTimeNanos();
-  task->total_runtime += curTime - task->prev_on_cpu_time;
+  if (task->prev_on_cpu_time != -1)
+    task->total_runtime += curTime - task->prev_on_cpu_time;
   CpuState* cs = cpu_state_of(task);
 
   GHOST_DPRINT(3, stderr, "Task %s offcpu %d oncpu time: %lld off cpu time: %lld", task->gtid.describe(), task->cpu, task->prev_on_cpu_time, curTime);
+
+  task->prev_on_cpu_time = -1;
 
 
   if (task->oncpu()) {
@@ -572,8 +588,6 @@ void DynamicScheduler::TaskOffCpu(DynamicTask* task, bool blocked,
     CHECK(from_switchto);
     CHECK_EQ(task->run_state, DynamicTaskState::kBlocked);
   }
-
-  task->prev_on_cpu_time = -1;
 
   task->run_state =
       blocked ? DynamicTaskState::kBlocked : DynamicTaskState::kRunnable;
@@ -599,16 +613,18 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
   DynamicTask* next = nullptr;
 
   if (!prio_boost) {
+    cs->dynamicSchedControlModule.swapScheduler();
     next = cs->current;
 
     // Check if task should be preempted
 /*     std::cout<<absl::GetCurrentTimeNanos()<<std::endl;
  */ 
-auto curTime = absl::GetCurrentTimeNanos();
+    auto curTime = absl::GetCurrentTimeNanos();
     if (!next) next = cs->dynamicSchedControlModule.pickNextTask(); // For some reason cs->current is null meaning task is going off cpu before sched
     else if (cs->dynamicSchedControlModule.getPreemptionTime() > 0 
+    && next->prev_on_cpu_time != -1
     && curTime - next->prev_on_cpu_time >= cs->dynamicSchedControlModule.getPreemptionTime()) {
-      std::cout << "Sched preempt" << std::endl;
+      GHOST_DPRINT(3, stderr, "Task %s preempted %d oncpu time: %lld off cpu time: %lld", next->gtid.describe(), next->cpu, next->prev_on_cpu_time, curTime);
       next->total_runtime += curTime - next->prev_on_cpu_time;
       next->prev_on_cpu_time = -1;
       cs->dynamicSchedControlModule.preemptTask(next);

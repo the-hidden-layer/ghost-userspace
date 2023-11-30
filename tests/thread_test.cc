@@ -35,32 +35,38 @@ void PreemptionDetector(int threadID) {
 }  // namespace
 }  // namespace ghost
 
+void func(int time1, int time2) {
+    auto t1 = ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [&time1] {
+    auto timeNow = absl::GetCurrentTimeNanos();
+    int i=0;
+    while (absl::GetCurrentTimeNanos() - timeNow <= (1e9 * time1)) {
+        i=(i+1)%INT_MAX;
+    }
+    });
+
+    absl::SleepFor(absl::Seconds(1));
+    
+    auto t2 = ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [&time2] {
+    auto timeNow = absl::GetCurrentTimeNanos();
+    int i=0;
+    while (absl::GetCurrentTimeNanos() - timeNow <= (1e9 * time2)) {
+        i=(i+1)%INT_MAX;
+    }
+    });
+
+    t1.Join();
+    t2.Join();
+    std::cout << "Func Done!\n";
+}
+
 int main() {
 
   printf("PreemptionDetector\n");
   ghost::ScopedTime time;
   
-  auto t1 = ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [] {
-    auto timeNow = absl::GetCurrentTimeNanos();
-    int i=0;
-    while(absl::GetCurrentTimeNanos() - timeNow <= 6e9) {
-        i=(i+1)%INT_MAX;
-        // printf("THREAD %d iter %d \n", 1, i);
-    }
-    std::cout<<"Thread 1 "<<i<<std::endl;
-  });
 
-  auto t2 = ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [] {
-    auto timeNow = absl::GetCurrentTimeNanos();
-    int i=0;
-    while (absl::GetCurrentTimeNanos() - timeNow <= 6e9) {
-        i=(i+1)%INT_MAX;
-    }
-    std::cout<<"Thread 2 "<<i<<std::endl;
-  });
-
-  t1.Join();
-  t2.Join();
+  func (10, 2);
+  func (10, 2);
 
   std::cout<<"Done!"<<std::endl;
   return 0;

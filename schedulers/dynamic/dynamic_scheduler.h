@@ -129,14 +129,17 @@ class DynamicSchedControlModule {
   }
 
   void swapScheduler() {
+    if (sampledTasks.empty()) return;
+    std::cout<<"Evaluating policies. CurPolicy: "<<curPolicyIdx<<std::endl;
     int bestPolicyIdx = 0;
     sort(sampledTasks.begin(), sampledTasks.end(), [](const SampledTaskDetails* t1, const SampledTaskDetails* t2) {
       return t1->creation_time < t2->creation_time;
     });
     int64_t bestPolicyEvaluation = this->supportedPolicies[0]->evaluatePolicy(sampledTasks);
 
-    for(int policyIdx=1; policyIdx < this->supportedPolicies.size(); policyIdx++) {
+    for(int policyIdx=0; policyIdx < this->supportedPolicies.size(); policyIdx++) {
       int64_t curPolicyEvaluation = this->supportedPolicies[policyIdx]->evaluatePolicy(sampledTasks);
+      std::cout<<"Evaluating policy: "<<policyIdx<<" service time: "<<curPolicyEvaluation<<std::endl;
 
       if (curPolicyEvaluation < bestPolicyEvaluation) {
         bestPolicyIdx = policyIdx;
@@ -145,6 +148,7 @@ class DynamicSchedControlModule {
     }
 
     if (this->curPolicyIdx == bestPolicyIdx) return; // No use in swapping schedulers
+    std::cout<<"Changing policies from: "<<curPolicyIdx<<" to: "<<bestPolicyIdx<<std::endl;
 
     auto tasks = this->supportedPolicies[curPolicyIdx]->offloadTasks();
     this->supportedPolicies[bestPolicyIdx]->loadTasks(tasks);
