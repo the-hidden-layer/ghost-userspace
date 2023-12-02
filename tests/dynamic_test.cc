@@ -22,9 +22,9 @@ struct ScopedTime {
 
 void TaskDistribution(
   int task1_count,
-  int task1_duration,
+  int task1_duration, /* milliseconds */
   int task2_count,
-  int task2_duration
+  int task2_duration  /* milliseconds */
   ) {
 
   std::vector<std::unique_ptr<ghost::GhostThread>> threads;
@@ -35,7 +35,7 @@ void TaskDistribution(
       new ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [&task1_duration] {
         int i=0;
         auto timeNow = absl::GetCurrentTimeNanos();
-        while (absl::GetCurrentTimeNanos() - timeNow <= (1e9 * task1_duration)) i=(i+1)%INT_MAX;
+        while (absl::GetCurrentTimeNanos() - timeNow <= (1e6 * task1_duration)) i=(i+1)%INT_MAX;
       }));
 
   for (int i = 0; i < task2_count; ++i)
@@ -43,7 +43,7 @@ void TaskDistribution(
       new ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [&task2_duration] {
         int i=0;
         auto timeNow = absl::GetCurrentTimeNanos();
-        while (absl::GetCurrentTimeNanos() - timeNow <= (1e9 * task2_duration)) i=(i+1)%INT_MAX;
+        while (absl::GetCurrentTimeNanos() - timeNow <= (1e6 * task2_duration)) i=(i+1)%INT_MAX;
       }));
 
   for (auto& t : threads) t->Join();
@@ -61,7 +61,7 @@ int main() {
   {
     printf("Uniform\n");
     ghost::ScopedTime time;
-    ghost::TaskDistribution(5, 1, 5, 1);
+    ghost::TaskDistribution(5, 1000, 5, 1000);
   }
   // {
   //   printf("LightFirst\n");
