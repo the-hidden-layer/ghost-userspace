@@ -43,9 +43,6 @@ private:
 public:
   int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
     std::cout<<"Evaluating FIFO"<<std::endl;
-    for(auto sampledTask: sampledTasks) {
-      std::cout<<sampledTask->creation_time<<" "<<sampledTask->total_runtime<<std::endl;
-    }
     int64_t totalServiceTime = 0;
 
     int64_t curTaskStartTime = 0;
@@ -157,25 +154,40 @@ private:
 public:
   int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
      std::cout<<"Evaluating RoundRobin"<<std::endl;
-    for(auto sampledTask: sampledTasks) {
-      std::cout<<sampledTask->creation_time<<" "<<sampledTask->total_runtime<<std::endl;
-    }
     std::vector<int64_t> remainingTime(sampledTasks.size());
     int64_t currentTime = sampledTasks[0]->creation_time;
+    // std::cout << "Start time: " << currentTime << std::endl;
     int lastUnqueuedTaskIdx = 1;
     int64_t totalServiceTime = 0;
 
     for (int i = 0; i < sampledTasks.size(); ++i) {
-        remainingTime[i] = (sampledTasks[i]->total_runtime);
+      remainingTime[i] = (sampledTasks[i]->total_runtime);
     }
+
+    // std::cout << "Total Run Time Left: " << std::endl;
+    // for(auto remaining: remainingTime) {
+    //   std::cout << remaining << std::endl;
+    // }
 
     std::queue<int> readyQueue;
     readyQueue.push(0);
 
     int numFinishedTasks = 0;
     while (numFinishedTasks < sampledTasks.size()) {
-      int curTaskIdx = readyQueue.front();
-      readyQueue.pop(); // Remove task from run queue
+      // std::cout << "Beginning Main RR Eval loop: "<<std::endl;
+      // std::cout << "RQ:" <<std::endl;
+      // auto q = readyQueue;
+      // while (!q.empty()) {
+      //   std::cout << q.front() << " ";
+      //   q.pop();
+      // }
+      if (readyQueue.empty()) {
+        readyQueue.push(numFinishedTasks);
+        lastUnqueuedTaskIdx=numFinishedTasks+1;
+        currentTime = sampledTasks[numFinishedTasks]->creation_time;
+      }
+      int curTaskIdx = readyQueue.front(); readyQueue.pop(); // Remove task from run queue
+      // std::cout << "Main RR Eval loop: " << curTaskIdx << " " << numFinishedTasks <<" " << sampledTasks.size() << std::endl;
 
       int timeSlice = std::min(this->getPreemptionTime(), remainingTime[curTaskIdx]);
       remainingTime[curTaskIdx] -= timeSlice;
@@ -183,7 +195,7 @@ public:
 
       while (lastUnqueuedTaskIdx < sampledTasks.size()) {
         if (sampledTasks[lastUnqueuedTaskIdx]->creation_time <= currentTime) {
-            readyQueue.push(lastUnqueuedTaskIdx);
+          readyQueue.push(lastUnqueuedTaskIdx);
         }
         lastUnqueuedTaskIdx+=1;
       }
@@ -192,7 +204,7 @@ public:
         totalServiceTime += currentTime - sampledTasks[curTaskIdx]->creation_time;
         numFinishedTasks+=1;
       } else {
-          readyQueue.push(curTaskIdx); // Put task at end of run queue
+        readyQueue.push(curTaskIdx); // Put task at end of run queue
       }
     }
     return totalServiceTime;
@@ -614,6 +626,7 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
   bool shouldPreemptCurTask = false;
 
   if (!prio_boost) {
+    // cs->dynamicSchedControlModule.swapScheduler();
     curTask = cs->current;
 
     // Check if task should be preempted
