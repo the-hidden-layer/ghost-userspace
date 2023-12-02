@@ -313,7 +313,6 @@ public:
 
 DynamicSchedControlModule :: DynamicSchedControlModule() {
   supportedPolicies = std::vector<DynamicSchedPolicy*>{
-    new FifoSchedPolicy(),
     new RoundRobinSchedPolicy(),
   };
 }
@@ -576,7 +575,7 @@ void DynamicScheduler::TaskOffCpu(DynamicTask* task, bool blocked,
     task->total_runtime += curTime - task->prev_on_cpu_time;
   CpuState* cs = cpu_state_of(task);
 
-  GHOST_DPRINT(3, stderr, "Task %s offcpu %d oncpu time: %lld off cpu time: %lld", task->gtid.describe(), task->cpu, task->prev_on_cpu_time, curTime);
+  GHOST_DPRINT(3, stderr, "Task %s OFFCPU %d oncpu time: %lld off cpu time: %lld total run time: %lld", task->gtid.describe(), task->cpu, task->prev_on_cpu_time, curTime, task->total_runtime);
 
   task->prev_on_cpu_time = -1;
 
@@ -610,34 +609,41 @@ void DynamicScheduler::TaskOnCpu(DynamicTask* task, Cpu cpu) {
 void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrier,
                                  bool prio_boost) {
   CpuState* cs = cpu_state(cpu);
-  DynamicTask* next = nullptr;
+  DynamicTask* curTask = nullptr;
+  DynamicTask* nextTask = nullptr;
+  bool shouldPreemptCurTask = false;
 
   if (!prio_boost) {
-    cs->dynamicSchedControlModule.swapScheduler();
-    next = cs->current;
+    curTask = cs->current;
 
     // Check if task should be preempted
 /*     std::cout<<absl::GetCurrentTimeNanos()<<std::endl;
  */ 
     auto curTime = absl::GetCurrentTimeNanos();
-    if (!next) next = cs->dynamicSchedControlModule.pickNextTask(); // For some reason cs->current is null meaning task is going off cpu before sched
+    if (!curTask) {
+      // no current task so find a new task to run
+      nextTask = cs->dynamicSchedControlModule.pickNextTask();
+    }
     else if (cs->dynamicSchedControlModule.getPreemptionTime() > 0 
-    && next->prev_on_cpu_time != -1
-    && curTime - next->prev_on_cpu_time >= cs->dynamicSchedControlModule.getPreemptionTime()) {
-      GHOST_DPRINT(3, stderr, "Task %s preempted %d oncpu time: %lld off cpu time: %lld", next->gtid.describe(), next->cpu, next->prev_on_cpu_time, curTime);
-      next->total_runtime += curTime - next->prev_on_cpu_time;
-      next->prev_on_cpu_time = -1;
-      cs->dynamicSchedControlModule.preemptTask(next);
-      next = cs->dynamicSchedControlModule.pickNextTask();
+    && curTask->prev_on_cpu_time != -1
+    && curTime - curTask->prev_on_cpu_time >= cs->dynamicSchedControlModule.getPreemptionTime()) {
+      // next->total_runtime += curTime - next->prev_on_cpu_time;
+      // next->prev_on_cpu_time = -1;
+      // cs->dynamicSchedControlModule.preemptTask(next);
+      shouldPreemptCurTask = true;
+      nextTask = cs->dynamicSchedControlModule.pickNextTask();
+    } else {
+      // run current task
+      nextTask = curTask;
     }
   }
 
   GHOST_DPRINT(3, stderr, "DynamicSchedule %s on %s cpu %d ",
-               next ? next->gtid.describe() : "idling",
+               nextTask ? nextTask->gtid.describe() : "idling",
                prio_boost ? "prio-boosted" : "", cpu.id());
 
   RunRequest* req = enclave()->GetRunRequest(cpu);
-  if (next) {
+  if (nextTask) {
     // Wait for 'next' to get offcpu before switching to it. This might seem
     // superfluous because we don't migrate tasks past the initial assignment
     // of the task to a cpu. However a SwitchTo target can migrate and run on
@@ -649,13 +655,13 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
     // the remote cpu. The 'on_cpu()' check below handles this scenario.
     //
     // See go/switchto-ghost for more details.
-    while (next->status_word.on_cpu()) {
+    while (nextTask->status_word.on_cpu()) {
       Pause();
     }
 
     req->Open({
-        .target = next->gtid,
-        .target_barrier = next->seqnum,
+        .target = nextTask->gtid,
+        .target_barrier = nextTask->seqnum,
         .agent_barrier = agent_barrier,
         .commit_flags = COMMIT_AT_TXN_COMMIT,
     });
@@ -664,19 +670,22 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
       // Txn commit succeeded and 'next' is oncpu.
       // if (next->gtid.describe() == firstTask)
         // std::cout << "DynamicSchedule: "<< next->gtid.describe() << std::endl;
-      TaskOnCpu(next, cpu);
+      if (shouldPreemptCurTask) {
+        TaskOffCpu(curTask, false, false);
+        cs->dynamicSchedControlModule.addTask(curTask);
+      }
+      TaskOnCpu(nextTask, cpu);
     } else {
       GHOST_DPRINT(3, stderr, "DynamicSchedule: commit failed (state=%d)",
                    req->state());
 
-      if (next == cs->current) {
-        // std::cout<<"ERROR CASE CAME HERE"<<std::endl;
-        TaskOffCpu(next, /*blocked=*/false, /*from_switchto=*/false);
+      if (nextTask == curTask) {
+        TaskOffCpu(nextTask, /*blocked=*/false, /*from_switchto=*/false);
       }
 
       // Txn commit failed so push 'next' to the front of runqueue.
-      next->prio_boost = true;
-      cs->dynamicSchedControlModule.addTask(next);
+      nextTask->prio_boost = true;
+      cs->dynamicSchedControlModule.addTask(nextTask);
     }
   } else {
     // If LocalYield is due to 'prio_boost' then instruct the kernel to

@@ -108,8 +108,11 @@ class DynamicSchedControlModule {
   }
 
   void endTask(DynamicTask* task) {
+    auto curTime = absl::GetCurrentTimeNanos();
+    std::cout<<"End Task "<<task->gtid.describe()<<" "<<task->creation_time<<" "<<task->total_runtime<<" "<<task->prev_on_cpu_time<<" "<<curTime - task->creation_time<<std::endl;
     this->sampledTasks.push_back(new SampledTaskDetails{task->creation_time, task->total_runtime});
     this->supportedPolicies[curPolicyIdx]->endTask(task);
+    this->swapScheduler();
   }
 
   int64_t getPreemptionTime() {

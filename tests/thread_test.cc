@@ -39,19 +39,23 @@ void func(int time1, int time2) {
     auto t1 = ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [&time1] {
     auto timeNow = absl::GetCurrentTimeNanos();
     int i=0;
-    while (absl::GetCurrentTimeNanos() - timeNow <= (1e9 * time1)) {
-        i=(i+1)%INT_MAX;
+    while (i < 100000) {
+      i=i+1;
+      auto timeNow = absl::GetCurrentTimeNanos();
+      while (absl::GetCurrentTimeNanos() - timeNow <= 100000);
     }
+    std::cout<<"Thread 1: "<< i<<std::endl;
     });
-
-    absl::SleepFor(absl::Seconds(1));
     
-    auto t2 = ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [&time2] {
+    auto t2 = ghost::GhostThread(ghost::GhostThread::KernelScheduler::kGhost, [&time1] {
     auto timeNow = absl::GetCurrentTimeNanos();
     int i=0;
-    while (absl::GetCurrentTimeNanos() - timeNow <= (1e9 * time2)) {
-        i=(i+1)%INT_MAX;
+    while (i < 100000) {
+      i=i+1;
+      auto timeNow = absl::GetCurrentTimeNanos();
+      while (absl::GetCurrentTimeNanos() - timeNow <= 100000);
     }
+    std::cout<<"Thread 2: "<< i<<std::endl;
     });
 
     t1.Join();
