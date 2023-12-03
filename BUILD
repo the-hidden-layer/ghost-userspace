@@ -278,6 +278,18 @@ cc_binary(
 )
 
 cc_binary(
+    name = "dynamic_lastN",
+    srcs = [
+        "tests/dynamic_lastN.cc",
+    ],
+    copts = compiler_flags,
+    deps = [
+        ":base",
+        ":ghost",
+    ],
+)
+
+cc_binary(
     name = "cfs_test",
     testonly = 1,
     srcs = [
