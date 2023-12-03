@@ -61,7 +61,7 @@ int main() {
   {
     printf("Uniform\n");
     ghost::ScopedTime time;
-    ghost::TaskDistribution(100, 10, 100, 10);
+    ghost::TaskDistribution(1000, 10, 1000, 10);
   }
   // {
   //   printf("LightFirst\n");
