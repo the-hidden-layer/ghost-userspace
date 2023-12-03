@@ -327,7 +327,8 @@ public:
 
 DynamicSchedControlModule :: DynamicSchedControlModule() {
   supportedPolicies = std::vector<DynamicSchedPolicy*>{
-    new RoundRobinSchedPolicy(),
+    new FifoSchedPolicy(),
+    new RoundRobinSchedPolicy()
   };
 }
 
