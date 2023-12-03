@@ -56,16 +56,16 @@ int main() {
   // {
   //   printf("HeavyFirst\n");
   //   ghost::ScopedTime time;
-  //   ghost::TaskDistribution(1, 10, 1, 2);
+  //   ghost::TaskDistribution(10, 1000, 1000, 10);
   // }
   {
     printf("Uniform\n");
     ghost::ScopedTime time;
-    ghost::TaskDistribution(5, 1000, 5, 1000);
+    ghost::TaskDistribution(100, 10, 100, 10);
   }
   // {
   //   printf("LightFirst\n");
   //   ghost::ScopedTime time;
-  //   ghost::TaskDistribution(1, 2, 1, 10);
+  //   ghost::TaskDistribution(1000, 10, 10, 1000);
   // }
 }

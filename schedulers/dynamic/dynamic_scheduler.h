@@ -85,7 +85,7 @@ public:
 */
 class DynamicSchedControlModule {
 private:
-  int lastN = 50;
+  int lastN = 10;
 
 public:
   DynamicSchedControlModule();
@@ -111,11 +111,10 @@ public:
   }
 
   void endTask(DynamicTask* task) {
-    auto curTime = absl::GetCurrentTimeNanos();
+    // auto curTime = absl::GetCurrentTimeNanos();
     // std::cout<<"End Task "<<task->gtid.describe()<<" "<<task->creation_time<<" "<<task->total_runtime<<" "<<task->prev_on_cpu_time<<" "<<curTime - task->creation_time<<std::endl;
     this->sampledTasks.push_back(new SampledTaskDetails{task->creation_time, task->total_runtime});
     if (sampledTasks.size() == lastN + 1) sampledTasks.erase(sampledTasks.begin());
-
     this->supportedPolicies[curPolicyIdx]->endTask(task);
     this->swapScheduler();
   }
@@ -143,6 +142,8 @@ public:
     sort(sampledTasks.begin(), sampledTasks.end(), [](const SampledTaskDetails* t1, const SampledTaskDetails* t2) {
       return t1->creation_time < t2->creation_time;
     });
+   
+    // auto start_eval_time = absl::GetCurrentTimeNanos();
     int64_t bestPolicyEvaluation = this->supportedPolicies[0]->evaluatePolicy(sampledTasks);
     //  std::cout<<"Evaluating policy: "<<bestPolicyIdx<<" service time: "<<bestPolicyEvaluation<<std::endl;
 
@@ -155,6 +156,7 @@ public:
         bestPolicyEvaluation = curPolicyEvaluation;
       }
     }
+    // std::cout << "eval_time " << absl::GetCurrentTimeNanos() - start_eval_time << "\n";
 
     if (this->curPolicyIdx == bestPolicyIdx) return; // No use in swapping schedulers
     // std::cout<<"Changing policies from: "<<curPolicyIdx<<" to: "<<bestPolicyIdx<<std::endl;

@@ -321,7 +321,7 @@ public:
   };
 
   int64_t getPreemptionTime() {
-    return 10000000; // 5 nanoseconds for experimenting
+    return 20000000; // 20 milliseconds
   }
 };
 
@@ -569,7 +569,7 @@ void DynamicScheduler::TaskPreempted(DynamicTask* task, const Message& msg) {
   const ghost_msg_payload_task_preempt* payload =
       static_cast<const ghost_msg_payload_task_preempt*>(msg.payload());
     
-  CpuState* cs = cpu_state_of(task);
+  // CpuState* cs = cpu_state_of(task);
 
   if (payload->from_switchto) {
     Cpu cpu = topology()->cpu(payload->cpu);
