@@ -147,9 +147,8 @@ public:
 
 class RoundRobinSchedPolicy : public DynamicSchedPolicy {
 private:
-  std::deque<DynamicTask*> prio_rq;
-  std::deque<DynamicTask*> rq;
   mutable absl::Mutex mu_;
+  std::deque<DynamicTask*> rq;
 
 public:
   int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
@@ -273,7 +272,7 @@ public:
 
   size_t rq_size() {
     absl::MutexLock lock(&mu_);
-    return prio_rq.size() + rq.size();
+    return rq.size();
   }
 
   bool isEmpty() { return rq_size() == 0; }
@@ -281,13 +280,6 @@ public:
   // Will be invoked when RR quantum is exhausted
   DynamicTask* pickNextTask() {
     absl::MutexLock lock(&mu_);
-    if (!prio_rq.empty()) {
-      DynamicTask* curTask = prio_rq.front();
-      curTask->run_state = DynamicTaskState::kRunnable;
-      prio_rq.pop_front();
-      return curTask;
-    }
-
     if (rq.empty()) return nullptr;
 
     DynamicTask* curTask = rq.front();
