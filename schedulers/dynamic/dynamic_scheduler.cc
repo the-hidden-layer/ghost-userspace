@@ -42,7 +42,7 @@ private:
 
 public:
   int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
-    std::cout<<"Evaluating FIFO"<<std::endl;
+    // std::cout<<"Evaluating FIFO"<<std::endl;
     int64_t totalServiceTime = 0;
 
     int64_t curTaskStartTime = 0;
@@ -153,7 +153,7 @@ private:
 
 public:
   int64_t evaluatePolicy(const std::vector<SampledTaskDetails*>& sampledTasks) {
-     std::cout<<"Evaluating RoundRobin"<<std::endl;
+    //  std::cout<<"Evaluating RoundRobin"<<std::endl;
     std::vector<int64_t> remainingTime(sampledTasks.size());
     int64_t currentTime = sampledTasks[0]->creation_time;
     // std::cout << "Start time: " << currentTime << std::endl;
@@ -202,6 +202,8 @@ public:
 
       if (remainingTime[curTaskIdx] == 0) {
         totalServiceTime += currentTime - sampledTasks[curTaskIdx]->creation_time;
+        // std::cout<<"Task finished in RR simulation:"<<std::endl;
+        // std::cout<<curTaskIdx<<" "<<sampledTasks[curTaskIdx]->creation_time<<" "<<currentTime<<" "<<currentTime - sampledTasks[curTaskIdx]->creation_time<<" "<<totalServiceTime<<std::endl;
         numFinishedTasks+=1;
       } else {
         readyQueue.push(curTaskIdx); // Put task at end of run queue
@@ -325,7 +327,8 @@ public:
 
 DynamicSchedControlModule :: DynamicSchedControlModule() {
   supportedPolicies = std::vector<DynamicSchedPolicy*>{
-    new RoundRobinSchedPolicy(),
+    new FifoSchedPolicy(),
+    new RoundRobinSchedPolicy()
   };
 }
 
@@ -649,6 +652,11 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
       // run current task
       nextTask = curTask;
     }
+
+    if (!nextTask) {
+      nextTask = curTask;
+      shouldPreemptCurTask = false;
+    }
   }
 
   GHOST_DPRINT(3, stderr, "DynamicSchedule %s on %s cpu %d ",
@@ -692,13 +700,26 @@ void DynamicScheduler::DynamicSchedule(const Cpu& cpu, BarrierToken agent_barrie
       GHOST_DPRINT(3, stderr, "DynamicSchedule: commit failed (state=%d)",
                    req->state());
 
-      if (nextTask == curTask) {
-        TaskOffCpu(nextTask, /*blocked=*/false, /*from_switchto=*/false);
+      // curTask @nullable - Current task on the cpu
+      // nextTask - Next task on the cpu
+      // shouldPreemptCurTask - current on cpu task needs to be preempted
+      // current if-else branch - ghost failed to place current task on the cpu, so we need to add it to the runqueue
+      if (!curTask) {
+        // there wasn't a task on the cpu already, so just add next task to the back of the runq
+        cs->dynamicSchedControlModule.addTask(nextTask);
+      } else {
+        if (curTask == nextTask) {
+          // Task was already on the cpu and it was going to run again, so remove it and let a different task run instead
+          TaskOffCpu(curTask, /*blocked=*/false, /*from_switchto=*/false);
+          cs->dynamicSchedControlModule.addTask(curTask);
+        } else {
+          // Different task was on the cpu, so take curTask off the cpu and add it to the queue
+          // nextTask never made it to the cpu so it add it to the queue too, since we just removed it from the runq
+          cs->dynamicSchedControlModule.addTask(nextTask);
+          TaskOffCpu(curTask, /*blocked=*/false, /*from_switchto=*/false);
+          cs->dynamicSchedControlModule.addTask(curTask);
+        }
       }
-
-      // Txn commit failed so push 'next' to the front of runqueue.
-      nextTask->prio_boost = true;
-      cs->dynamicSchedControlModule.addTask(nextTask);
     }
   } else {
     // If LocalYield is due to 'prio_boost' then instruct the kernel to

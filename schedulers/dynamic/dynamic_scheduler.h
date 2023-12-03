@@ -112,9 +112,7 @@ public:
 
   void endTask(DynamicTask* task) {
     auto curTime = absl::GetCurrentTimeNanos();
-    std::cout<<"End Task "<<task->gtid.describe()<<" "<<task->creation_time<<" "<<task->total_runtime<<" "<<task->prev_on_cpu_time<<" "<<curTime - task->creation_time<<std::endl;
-    
-    // maintain only lastN number of tasks
+    // std::cout<<"End Task "<<task->gtid.describe()<<" "<<task->creation_time<<" "<<task->total_runtime<<" "<<task->prev_on_cpu_time<<" "<<curTime - task->creation_time<<std::endl;
     this->sampledTasks.push_back(new SampledTaskDetails{task->creation_time, task->total_runtime});
     if (sampledTasks.size() == lastN + 1) sampledTasks.erase(sampledTasks.begin());
 
@@ -140,16 +138,17 @@ public:
 
   void swapScheduler() {
     if (sampledTasks.empty()) return;
-    std::cout<<"Evaluating policies. CurPolicy: "<<curPolicyIdx<<std::endl;
+    // std::cout<<"Evaluating policies"<<std::endl;
     int bestPolicyIdx = 0;
     sort(sampledTasks.begin(), sampledTasks.end(), [](const SampledTaskDetails* t1, const SampledTaskDetails* t2) {
       return t1->creation_time < t2->creation_time;
     });
     int64_t bestPolicyEvaluation = this->supportedPolicies[0]->evaluatePolicy(sampledTasks);
+    //  std::cout<<"Evaluating policy: "<<bestPolicyIdx<<" service time: "<<bestPolicyEvaluation<<std::endl;
 
-    for(int policyIdx=0; policyIdx < this->supportedPolicies.size(); policyIdx++) {
+    for(int policyIdx=1; policyIdx < this->supportedPolicies.size(); policyIdx++) {
       int64_t curPolicyEvaluation = this->supportedPolicies[policyIdx]->evaluatePolicy(sampledTasks);
-      std::cout<<"Evaluating policy: "<<policyIdx<<" service time: "<<curPolicyEvaluation<<std::endl;
+      // std::cout<<"Evaluating policy: "<<policyIdx<<" service time: "<<curPolicyEvaluation<<std::endl;
 
       if (curPolicyEvaluation < bestPolicyEvaluation) {
         bestPolicyIdx = policyIdx;
@@ -158,7 +157,7 @@ public:
     }
 
     if (this->curPolicyIdx == bestPolicyIdx) return; // No use in swapping schedulers
-    std::cout<<"Changing policies from: "<<curPolicyIdx<<" to: "<<bestPolicyIdx<<std::endl;
+    // std::cout<<"Changing policies from: "<<curPolicyIdx<<" to: "<<bestPolicyIdx<<std::endl;
 
     auto tasks = this->supportedPolicies[curPolicyIdx]->offloadTasks();
     this->supportedPolicies[bestPolicyIdx]->loadTasks(tasks);
