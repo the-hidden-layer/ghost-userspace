@@ -321,7 +321,7 @@ public:
   };
 
   int64_t getPreemptionTime() {
-    return 20000000; // 20 milliseconds
+    return 10000; // 0.01 milliseconds
   }
 };
 
