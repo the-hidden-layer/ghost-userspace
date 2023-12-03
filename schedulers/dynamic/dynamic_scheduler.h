@@ -84,8 +84,11 @@ public:
  * and then swap policies if another policy is better - Done
 */
 class DynamicSchedControlModule {
-  public:
-  DynamicSchedControlModule ();
+private:
+  int lastN = 50;
+
+public:
+  DynamicSchedControlModule();
 
   std::vector<SampledTaskDetails*> sampledTasks;
   int curPolicyIdx = 0;
@@ -110,7 +113,11 @@ class DynamicSchedControlModule {
   void endTask(DynamicTask* task) {
     auto curTime = absl::GetCurrentTimeNanos();
     std::cout<<"End Task "<<task->gtid.describe()<<" "<<task->creation_time<<" "<<task->total_runtime<<" "<<task->prev_on_cpu_time<<" "<<curTime - task->creation_time<<std::endl;
+    
+    // maintain only lastN number of tasks
     this->sampledTasks.push_back(new SampledTaskDetails{task->creation_time, task->total_runtime});
+    if (sampledTasks.size() == lastN + 1) sampledTasks.erase(sampledTasks.begin());
+
     this->supportedPolicies[curPolicyIdx]->endTask(task);
     this->swapScheduler();
   }
