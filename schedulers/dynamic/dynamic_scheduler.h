@@ -143,7 +143,7 @@ public:
       return t1->creation_time < t2->creation_time;
     });
    
-    // auto start_eval_time = absl::GetCurrentTimeNanos();
+    auto start_eval_time = absl::GetCurrentTimeNanos();
     int64_t bestPolicyEvaluation = this->supportedPolicies[0]->evaluatePolicy(sampledTasks);
     //  std::cout<<"Evaluating policy: "<<bestPolicyIdx<<" service time: "<<bestPolicyEvaluation<<std::endl;
 
@@ -158,13 +158,20 @@ public:
     }
     // std::cout << "eval_time " << absl::GetCurrentTimeNanos() - start_eval_time << "\n";
 
-    if (this->curPolicyIdx == bestPolicyIdx) return; // No use in swapping schedulers
+    if (this->curPolicyIdx == bestPolicyIdx) {
+      auto end_eval_time = absl::GetCurrentTimeNanos();
+      std::cout <<"NoSwapEvalTime: " << end_eval_time - start_eval_time << std::endl;
+      return;
+    } // No use in swapping schedulers
     // std::cout<<"Changing policies from: "<<curPolicyIdx<<" to: "<<bestPolicyIdx<<std::endl;
 
     auto tasks = this->supportedPolicies[curPolicyIdx]->offloadTasks();
     this->supportedPolicies[bestPolicyIdx]->loadTasks(tasks);
 
     this->curPolicyIdx = bestPolicyIdx;
+
+    auto end_eval_time = absl::GetCurrentTimeNanos();
+    std::cout <<"YesSwapEvalTime: " << end_eval_time - start_eval_time << std::endl;
   }
 };
 

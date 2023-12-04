@@ -278,6 +278,30 @@ cc_binary(
 )
 
 cc_binary(
+    name = "dynamic_fifo",
+    srcs = [
+        "tests/dynamic_fifo.cc",
+    ],
+    copts = compiler_flags,
+    deps = [
+        ":base",
+        ":ghost",
+    ],
+)
+
+cc_binary(
+    name = "num_tasks_overhead_test",
+    srcs = [
+        "tests/num_tasks_overhead_test.cc",
+    ],
+    copts = compiler_flags,
+    deps = [
+        ":base",
+        ":ghost",
+    ],
+)
+
+cc_binary(
     name = "dynamic_lastN",
     srcs = [
         "tests/dynamic_lastN.cc",
