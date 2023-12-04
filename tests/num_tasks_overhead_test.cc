@@ -22,10 +22,10 @@ struct ScopedTime {
 };
 
 
-int unoptimizableFunc(int numIters) {
+int unoptimizableFunc(long numIters) {
   volatile int result = 0; // Using volatile to prevent optimization
 
-  for (int i = 0; i < numIters; i+=17) {
+  for (long i = 0; i < numIters; i+=17) {
       result += i * (i + std::rand() % 1000); // Performing some computation
   }
 
@@ -33,12 +33,11 @@ int unoptimizableFunc(int numIters) {
 }
 
 void TaskDistribution(
-  int task_count
+  int task_count,
+  const long smallTaskNumIters
   ) {
   std::vector<std::unique_ptr<ghost::GhostThread>> threads;
   threads.reserve(task_count);
-
-  const int smallTaskNumIters = 4400000; // ~ 5 ms
 
   std::vector<int> taskResults(task_count);
 
@@ -71,6 +70,10 @@ int main() {
   //   ghost::TaskDistribution(1000, 10, 1000, 10);
   // }
   // printf("N\n");
-  ghost::TaskDistribution(1000);
+
+  // IMPORTANT: Reused this script for both overhead tests
+  const long numItersFor10ms = 8800000; // ~ 10 ms
+  const long taskNumIters = numItersFor10ms*10;
+  ghost::TaskDistribution(1000, taskNumIters);
   // printf("TotalServiceTime: %0.2f ms\n", totalServiceTime);
 }
